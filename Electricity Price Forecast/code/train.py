@@ -1,6 +1,7 @@
 """
 模型训练脚本
 用于批量训练所有模型并保存
+支持模型特定的特征选择
 """
 
 import os
@@ -11,7 +12,7 @@ import logging
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from sklearn.preprocessing import StandardScaler
 
 # 添加项目根目录到路径
@@ -20,6 +21,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
 from data_loader import DataLoader
 from feature_engineering import FeatureEngineer
+from feature_selector import FeatureSelector
 from models import (
     create_linear_model, create_tree_model, create_epf_model
 )
@@ -41,6 +43,7 @@ class ModelTrainer:
     """
     模型训练器
     负责批量训练所有模型并保存
+    支持模型特定的特征选择
     """
     
     def __init__(self, config: Config):
@@ -55,16 +58,26 @@ class ModelTrainer:
         self.config = config
         self.results = {}
         
+        # 初始化特征选择器
+        self.feature_selector = FeatureSelector()
+        
         # 创建保存目录
         for path in config.model_paths.values():
             os.makedirs(path, exist_ok=True)
         
         logger.info("模型训练器初始化完成")
+        logger.info("特征选择器已加载")
     
-    def prepare_data(self) -> Dict[str, Any]:
+    def prepare_data(self, model_name: Optional[str] = None) -> Dict[str, Any]:
         """
         准备训练数据
         从features目录加载已生成的特征数据
+        支持模型特定的特征选择
+        
+        Parameters
+        ----------
+        model_name : str, optional
+            模型名称，用于选择特定特征。不指定则使用所有特征
         
         Returns
         -------
@@ -80,18 +93,32 @@ class ModelTrainer:
             logger.info("已从features目录加载特征数据")
         except FileNotFoundError as e:
             logger.error(f"特征数据未找到: {e}")
-            logger.error("请先运行 generate_features.py 生成特征数据")
+            logger.error("请先运行: python main.py features")
             raise
         
-        # 准备特征和目标
-        feature_cols = [col for col in features_df.columns if col not in target_cols + ['Date', 'Hour', '日期', '时段', 'datetime']]
-        # 只选择数值型特征
-        numeric_feature_cols = features_df[feature_cols].select_dtypes(include=[np.number]).columns.tolist()
-        X = features_df[numeric_feature_cols].values
+        # 获取所有可用的数值型特征列
+        all_feature_cols = [col for col in features_df.columns 
+                           if col not in target_cols + ['预测日期']]
+        numeric_feature_cols = features_df[all_feature_cols].select_dtypes(include=[np.number]).columns.tolist()
+        
+        # 根据模型选择特征
+        if model_name:
+            selected_features = self.feature_selector.select_features_for_model(
+                model_name, numeric_feature_cols
+            )
+            feature_info = self.feature_selector.get_model_feature_info(model_name)
+            logger.info(f"模型 {model_name} 使用 {len(selected_features)} 个选定特征")
+        else:
+            selected_features = numeric_feature_cols
+            feature_info = {'normalize': True}  # 默认需要标准化
+            logger.info(f"使用所有 {len(selected_features)} 个特征")
+        
+        # 准备特征矩阵
+        X = features_df[selected_features].values
         y = features_df[target_cols].values
         
-        # 时间序列划分
-        dates = features_df['Date'].unique()
+        # 时间序列划分（基于预测日期）
+        dates = features_df['预测日期'].values
         n_dates = len(dates)
         
         # 划分比例：训练集80%，验证集10%，测试集10%
@@ -103,35 +130,40 @@ class ModelTrainer:
         test_dates = dates[val_end:]
         
         # 根据日期划分数据集
-        train_mask = features_df['Date'].isin(train_dates)
-        val_mask = features_df['Date'].isin(val_dates)
-        test_mask = features_df['Date'].isin(test_dates)
+        train_mask = features_df['预测日期'].isin(train_dates)
+        val_mask = features_df['预测日期'].isin(val_dates)
+        test_mask = features_df['预测日期'].isin(test_dates)
         
         X_train, y_train = X[train_mask], y[train_mask]
         X_val, y_val = X[val_mask], y[val_mask]
         X_test, y_test = X[test_mask], y[test_mask]
         
-        # 特征标准化（使用训练集的统计量标准化所有数据集）
-        scaler = StandardScaler()
-        X_train = scaler.fit_transform(X_train)
-        X_val = scaler.transform(X_val)
-        X_test = scaler.transform(X_test)
+        # 根据模型配置决定是否标准化
+        scaler = None
+        if feature_info.get('normalize', True):
+            scaler = StandardScaler()
+            X_train = scaler.fit_transform(X_train)
+            X_val = scaler.transform(X_val)
+            X_test = scaler.transform(X_test)
+            logger.info(f"  特征标准化: 已应用 (StandardScaler)")
+        else:
+            logger.info(f"  特征标准化: 已跳过")
         
         logger.info(f"数据划分完成:")
         logger.info(f"  训练集: {len(X_train)} 样本")
         logger.info(f"  验证集: {len(X_val)} 样本")
         logger.info(f"  测试集: {len(X_test)} 样本")
-        logger.info(f"  特征数: {len(numeric_feature_cols)}")
+        logger.info(f"  特征数: {len(selected_features)}")
         logger.info(f"  目标数: {len(target_cols)}")
-        logger.info(f"  特征标准化: 已应用 (StandardScaler)")
         
         return {
             'X_train': X_train, 'y_train': y_train,
             'X_val': X_val, 'y_val': y_val,
             'X_test': X_test, 'y_test': y_test,
-            'feature_cols': numeric_feature_cols,
+            'feature_cols': selected_features,
             'target_cols': target_cols,
-            'scaler': scaler
+            'scaler': scaler,
+            'model_name': model_name
         }
     
     def get_model_list(self, model_names: Optional[List[str]] = None) -> List[Dict[str, Any]]:
@@ -156,7 +188,6 @@ class ModelTrainer:
             {'name': 'ElasticNet', 'type': 'linear', 'params': {'model_type': 'elastic_net', 'alpha': 0.1, 'l1_ratio': 0.5}},
             
             # 树模型
-            {'name': 'DecisionTree', 'type': 'tree', 'params': {'model_type': 'decision_tree', 'max_depth': 10}},
             {'name': 'RandomForest', 'type': 'tree', 'params': {'model_type': 'random_forest', 'n_estimators': 100}},
             {'name': 'GradientBoosting', 'type': 'tree', 'params': {'model_type': 'gradient_boosting', 'n_estimators': 100}},
         ]
@@ -201,16 +232,15 @@ class ModelTrainer:
         
         return models
     
-    def train_model(self, model_config: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any]:
+    def train_model(self, model_config: Dict[str, Any]) -> Dict[str, Any]:
         """
         训练单个模型
+        为每个模型准备特定的特征数据
         
         Parameters
         ----------
         model_config : dict
             模型配置
-        data : dict
-            数据字典
             
         Returns
         -------
@@ -221,8 +251,13 @@ class ModelTrainer:
         model_type = model_config['type']
         params = model_config['params']
         
-        logger.info(f"\n开始训练模型: {name}")
+        logger.info(f"\n{'='*60}")
+        logger.info(f"开始训练模型: {name}")
+        logger.info(f"{'='*60}")
         start_time = time.time()
+        
+        # 为当前模型准备数据（使用模型特定的特征）
+        data = self.prepare_data(model_name=name)
         
         try:
             # 创建模型
@@ -293,6 +328,7 @@ class ModelTrainer:
     def train_all_models(self, model_names: Optional[List[str]] = None) -> pd.DataFrame:
         """
         批量训练所有模型
+        每个模型使用其特定的特征集
         
         Parameters
         ----------
@@ -306,21 +342,21 @@ class ModelTrainer:
         """
         logger.info("=" * 60)
         logger.info("开始批量训练模型")
+        logger.info("注意：每个模型将使用其特定的特征集")
         logger.info("=" * 60)
-        
-        # 准备数据
-        data = self.prepare_data()
         
         # 获取模型列表（传入model_names以避免不必要的依赖检查）
         all_models = self.get_model_list(model_names)
         
         logger.info(f"共 {len(all_models)} 个模型需要训练")
         
-        # 训练每个模型
+        # 训练每个模型（每个模型独立准备数据以使用特定特征）
         results = []
         for i, model_config in enumerate(all_models, 1):
-            logger.info(f"\n[{i}/{len(all_models)}] 训练进度")
-            result = self.train_model(model_config, data)
+            logger.info(f"\n{'='*60}")
+            logger.info(f"[{i}/{len(all_models)}] 总体进度")
+            logger.info(f"{'='*60}")
+            result = self.train_model(model_config)
             results.append(result)
         
         # 生成结果表

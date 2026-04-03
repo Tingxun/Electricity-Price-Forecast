@@ -74,11 +74,14 @@ def calculate_mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return np.mean(np.abs(y_true - y_pred))
 
 
-def calculate_mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+def calculate_mape(y_true: np.ndarray, y_pred: np.ndarray, epsilon: float = 10.0) -> float:
     """
     计算平均绝对百分比误差 (Mean Absolute Percentage Error)
     
     MAPE = (100%/n) * sum(|(y_true - y_pred) / y_true|)
+    
+    注意: 对于电价预测，当价格接近0时，MAPE会变得非常大。
+    本实现使用epsilon来避免极小值导致的MAPE爆炸问题。
     
     Parameters
     ----------
@@ -86,6 +89,10 @@ def calculate_mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
         真实值
     y_pred : np.ndarray
         预测值
+    epsilon : float, default=10.0
+        用于稳定MAPE计算的最小价格阈值。
+        价格低于此值时，分母会被替换为此值以避免MAPE过大。
+        对于山西电力市场，建议设置为10（电价单位：元/MWh）
         
     Returns
     -------
@@ -95,12 +102,10 @@ def calculate_mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     y_true = np.asarray(y_true)
     y_pred = np.asarray(y_pred)
     
-    # 避免除以零
-    mask = y_true != 0
-    if not np.any(mask):
-        return np.inf
+    # 避免除以零和极小值 - 使用epsilon作为最小分母
+    denominator = np.maximum(np.abs(y_true), epsilon)
     
-    return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
+    return np.mean(np.abs((y_true - y_pred) / denominator)) * 100
 
 
 def calculate_smape(y_true: np.ndarray, y_pred: np.ndarray) -> float:

@@ -1,6 +1,8 @@
 """
 特征工程脚本
 从processed数据生成特征，保存到features目录
+
+使用V2版本：按照实验方案要求，支持T+1预测场景
 """
 
 import os
@@ -10,7 +12,7 @@ import pandas as pd
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
-from feature_engineering import FeatureEngineer
+from feature_engineering_v2 import FeatureEngineerV2
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,7 +26,7 @@ def main():
     config = Config()
     
     logger.info("=" * 60)
-    logger.info("开始生成特征")
+    logger.info("开始生成特征 (V2 - T+1预测场景)")
     logger.info("=" * 60)
     
     # 检查processed数据是否存在
@@ -40,8 +42,8 @@ def main():
     df['日期'] = pd.to_datetime(df['日期'])
     logger.info(f"数据加载完成: {len(df)} 条记录")
     
-    # 创建特征
-    engineer = FeatureEngineer()
+    # 创建特征（使用V2版本）
+    engineer = FeatureEngineerV2()
     features_df, target_cols = engineer.create_all_features(df)
     
     # 保存特征

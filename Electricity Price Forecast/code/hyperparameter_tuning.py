@@ -186,9 +186,8 @@ class HyperparameterTuner:
             if model_name == 'ElasticNet':
                 model_type = 'elastic_net'
             base_model = create_linear_model(model_type=model_type)
-        elif model_name in ['DecisionTree', 'RandomForest', 'GradientBoosting']:
+        elif model_name in ['RandomForest', 'GradientBoosting']:
             model_map = {
-                'DecisionTree': 'decision_tree',
                 'RandomForest': 'random_forest',
                 'GradientBoosting': 'gradient_boosting'
             }
@@ -261,9 +260,8 @@ class HyperparameterTuner:
             if model_name == 'ElasticNet':
                 model_type = 'elastic_net'
             base_model = create_linear_model(model_type=model_type)
-        elif model_name in ['DecisionTree', 'RandomForest', 'GradientBoosting']:
+        elif model_name in ['RandomForest', 'GradientBoosting']:
             model_map = {
-                'DecisionTree': 'decision_tree',
                 'RandomForest': 'random_forest',
                 'GradientBoosting': 'gradient_boosting'
             }

@@ -112,7 +112,7 @@ python main.py train
 | 类别 | 模型名称 |
 |------|----------|
 | 线性模型 | LinearRegression, Ridge, Lasso, ElasticNet |
-| 树模型 | DecisionTree, RandomForest, GradientBoosting, XGBoost |
+| 树模型 | RandomForest, GradientBoosting, XGBoost |
 | 神经网络 | MLP, LSTM, GRU, Transformer |
 | 外部模型 | LEAR (epftoolbox) |
 

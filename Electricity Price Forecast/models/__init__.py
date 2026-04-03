@@ -17,7 +17,6 @@ from .linear_models import (
 
 # 导入树模型
 from .tree_models import (
-    DecisionTreeModel,
     RandomForestModel,
     GradientBoostingModel,
     create_tree_model
@@ -68,7 +67,6 @@ __all__ = [
     'RidgeModel',
     'LassoModel',
     'ElasticNetModel',
-    'DecisionTreeModel',
     'RandomForestModel',
     'GradientBoostingModel',
     'create_linear_model',
