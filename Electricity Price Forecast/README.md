@@ -14,13 +14,12 @@ Electricity Price Forecast/
 │   ├── main.py                 # 主程序入口
 │   ├── config.py               # 项目配置
 │   ├── data_preprocessing.py   # 数据预处理
-│   ├── generate_features.py    # 特征工程
-│   ├── feature_engineering.py  # 特征工程类
+│   ├── feature_engineering.py  # 特征工程
+│   ├── feature_selector.py     # 特征选择
 │   ├── train.py                # 模型训练
 │   ├── evaluate.py             # 模型评估
 │   ├── predict.py              # 预测功能
 │   ├── hyperparameter_tuning.py # 超参数调优
-│   ├── data_loader.py          # 数据加载
 │   └── ...
 ├── models/                     # 模型实现
 │   ├── linear_models.py        # 线性模型（Lasso/Ridge等）

@@ -11,13 +11,13 @@ import seaborn as sns
 from typing import List, Dict, Any, Optional, Tuple
 import logging
 
-# 设置中文字体
-plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
-plt.rcParams['axes.unicode_minus'] = False
-
 # 设置样式
 sns.set_style("whitegrid")
 plt.style.use('seaborn-v0_8-darkgrid')
+
+# 设置中文字体
+plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
 
 logger = logging.getLogger(__name__)
 

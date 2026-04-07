@@ -17,8 +17,8 @@ from typing import Dict, List, Any, Optional
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import Config
-from data_loader import DataLoader
 from feature_engineering import FeatureEngineer
+from feature_selector import FeatureSelector
 from models import BaseModel
 
 # 配置日志
@@ -51,6 +51,9 @@ class Predictor:
         self.config = config
         self.model = None
         self.model_name = None
+        
+        # 初始化特征选择器
+        self.feature_selector = FeatureSelector()
         
         logger.info("预测器初始化完成")
     
@@ -88,14 +91,16 @@ class Predictor:
         logger.error(f"未找到模型: {model_name}")
         return False
     
-    def prepare_prediction_data(self, target_date: str) -> np.ndarray:
+    def prepare_prediction_data(self, target_date: str, model_name: str = None) -> np.ndarray:
         """
-        准备预测数据
+        准备预测数据（从features目录加载已生成的特征）
         
         Parameters
         ----------
         target_date : str
             目标预测日期 (格式: YYYY-MM-DD)
+        model_name : str, optional
+            模型名称，用于选择特定特征
             
         Returns
         -------
@@ -104,26 +109,40 @@ class Predictor:
         """
         logger.info(f"准备预测数据，目标日期: {target_date}")
         
-        # 加载数据
-        loader = DataLoader(self.config)
-        df = loader.load_data()
-        
-        # 特征工程
+        # 从features目录加载特征数据
         engineer = FeatureEngineer()
-        features_df, target_cols = engineer.create_all_features(df)
+        try:
+            features_df, target_cols = engineer.load_features()
+            logger.info("已从features目录加载特征数据")
+        except FileNotFoundError as e:
+            logger.error(f"特征数据未找到: {e}")
+            logger.error("请先运行: python main.py features")
+            raise
         
-        # 获取特征列
-        feature_cols = [col for col in features_df.columns if col not in target_cols + ['Date', 'Hour']]
+        # 获取所有可用的数值型特征列
+        all_feature_cols = [col for col in features_df.columns 
+                           if col not in target_cols + ['预测日期']]
+        numeric_feature_cols = features_df[all_feature_cols].select_dtypes(include=[np.number]).columns.tolist()
+        
+        # 根据模型选择特征
+        if model_name:
+            selected_features = self.feature_selector.select_features_for_model(
+                model_name, numeric_feature_cols
+            )
+            logger.info(f"模型 {model_name} 使用 {len(selected_features)} 个选定特征")
+        else:
+            selected_features = numeric_feature_cols
+            logger.info(f"使用所有 {len(selected_features)} 个特征")
         
         # 找到目标日期的数据
-        target_data = features_df[features_df['Date'] == target_date]
+        target_data = features_df[features_df['预测日期'] == target_date]
         
         if len(target_data) == 0:
             # 如果目标日期没有数据，使用最后可用的数据
             logger.warning(f"目标日期 {target_date} 无数据，使用最新可用数据")
             target_data = features_df.iloc[-24:].copy()
         
-        X = target_data[feature_cols].values
+        X = target_data[selected_features].values
         
         logger.info(f"预测数据准备完成: {X.shape}")
         return X
@@ -155,7 +174,7 @@ class Predictor:
         logger.info(f"使用模型 {model_name} 预测 {target_date} 的电价")
         
         # 准备数据
-        X = self.prepare_prediction_data(target_date)
+        X = self.prepare_prediction_data(target_date, model_name)
         
         # 进行预测
         try:

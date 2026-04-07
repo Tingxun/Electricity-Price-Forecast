@@ -19,7 +19,6 @@ from sklearn.preprocessing import StandardScaler
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import Config
-from data_loader import DataLoader
 from feature_engineering import FeatureEngineer
 from feature_selector import FeatureSelector
 from models import (

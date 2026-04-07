@@ -18,8 +18,8 @@ from sklearn.metrics import make_scorer, mean_absolute_error
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import Config
-from data_loader import DataLoader
 from feature_engineering import FeatureEngineer
+from feature_selector import FeatureSelector
 from models import create_linear_model, create_tree_model, create_neural_network
 from utils.metrics import calculate_mae
 
@@ -52,15 +52,23 @@ class HyperparameterTuner:
         """
         self.config = config
         
+        # 初始化特征选择器
+        self.feature_selector = FeatureSelector()
+        
         # 创建保存目录
         os.makedirs(config.result_paths['logs'], exist_ok=True)
         
         logger.info("超参数调优器初始化完成")
     
-    def prepare_data(self) -> Dict[str, Any]:
+    def prepare_data(self, model_name: Optional[str] = None) -> Dict[str, Any]:
         """
-        准备数据
+        准备数据（从features目录加载已生成的特征）
         
+        Parameters
+        ----------
+        model_name : str, optional
+            模型名称，用于选择特定特征
+            
         Returns
         -------
         data_dict : dict
@@ -68,21 +76,37 @@ class HyperparameterTuner:
         """
         logger.info("开始准备数据...")
         
-        # 加载数据
-        loader = DataLoader(self.config)
-        df = loader.load_data()
-        
-        # 特征工程
+        # 从features目录加载特征数据
         engineer = FeatureEngineer()
-        features_df, target_cols = engineer.create_all_features(df)
+        try:
+            features_df, target_cols = engineer.load_features()
+            logger.info("已从features目录加载特征数据")
+        except FileNotFoundError as e:
+            logger.error(f"特征数据未找到: {e}")
+            logger.error("请先运行: python main.py features")
+            raise
         
-        # 准备特征和目标
-        feature_cols = [col for col in features_df.columns if col not in target_cols + ['Date', 'Hour']]
-        X = features_df[feature_cols].values
+        # 获取所有可用的数值型特征列
+        all_feature_cols = [col for col in features_df.columns 
+                           if col not in target_cols + ['预测日期']]
+        numeric_feature_cols = features_df[all_feature_cols].select_dtypes(include=[np.number]).columns.tolist()
+        
+        # 根据模型选择特征
+        if model_name:
+            selected_features = self.feature_selector.select_features_for_model(
+                model_name, numeric_feature_cols
+            )
+            logger.info(f"模型 {model_name} 使用 {len(selected_features)} 个选定特征")
+        else:
+            selected_features = numeric_feature_cols
+            logger.info(f"使用所有 {len(selected_features)} 个特征")
+        
+        # 准备特征矩阵
+        X = features_df[selected_features].values
         y = features_df[target_cols].values
         
-        # 时间序列划分
-        dates = features_df['Date'].unique()
+        # 时间序列划分（基于预测日期）
+        dates = features_df['预测日期'].values
         n_dates = len(dates)
         
         train_end = int(n_dates * 0.8)
@@ -90,8 +114,8 @@ class HyperparameterTuner:
         train_dates = dates[:train_end]
         val_dates = dates[train_end:]
         
-        train_mask = features_df['Date'].isin(train_dates)
-        val_mask = features_df['Date'].isin(val_dates)
+        train_mask = features_df['预测日期'].isin(train_dates)
+        val_mask = features_df['预测日期'].isin(val_dates)
         
         X_train, y_train = X[train_mask], y[train_mask]
         X_val, y_val = X[val_mask], y[val_mask]
@@ -103,7 +127,7 @@ class HyperparameterTuner:
         return {
             'X_train': X_train, 'y_train': y_train,
             'X_val': X_val, 'y_val': y_val,
-            'feature_cols': feature_cols
+            'feature_cols': selected_features
         }
     
     def get_param_grid(self, model_name: str) -> Dict[str, Any]:

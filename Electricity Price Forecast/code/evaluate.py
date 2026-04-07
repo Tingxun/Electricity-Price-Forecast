@@ -18,8 +18,8 @@ import pickle
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import Config
-from data_loader import DataLoader
 from feature_engineering import FeatureEngineer
+from feature_selector import FeatureSelector
 from models import BaseModel
 from utils.metrics import (
     calculate_mae, calculate_rmse, 
@@ -56,6 +56,9 @@ class ModelEvaluator:
         self.config = config
         self.results = {}
         
+        # 初始化特征选择器
+        self.feature_selector = FeatureSelector()
+        
         # 创建结果目录
         os.makedirs(config.result_paths['predictions'], exist_ok=True)
         os.makedirs(config.result_paths['figures'], exist_ok=True)
@@ -63,10 +66,15 @@ class ModelEvaluator:
         
         logger.info("模型评估器初始化完成")
     
-    def prepare_data(self) -> Dict[str, Any]:
+    def prepare_data(self, model_name: Optional[str] = None) -> Dict[str, Any]:
         """
-        准备评估数据（复用训练脚本的数据准备逻辑）
+        准备评估数据（从features目录加载已生成的特征）
         
+        Parameters
+        ----------
+        model_name : str, optional
+            模型名称，用于选择特定特征
+            
         Returns
         -------
         data_dict : dict
@@ -74,24 +82,40 @@ class ModelEvaluator:
         """
         logger.info("开始准备数据...")
         
-        # 加载数据
-        data_path = self.config.data_paths['raw'] / '市场边界_出清价格总表.csv'
-        loader = DataLoader(str(data_path))
-        df = loader.load_data()
-        
-        # 特征工程
+        # 从features目录加载特征数据
         engineer = FeatureEngineer()
-        features_df, target_cols = engineer.create_all_features(df)
+        try:
+            features_df, target_cols = engineer.load_features()
+            logger.info("已从features目录加载特征数据")
+        except FileNotFoundError as e:
+            logger.error(f"特征数据未找到: {e}")
+            logger.error("请先运行: python main.py features")
+            raise
         
-        # 准备特征和目标
-        feature_cols = [col for col in features_df.columns if col not in target_cols + ['Date', 'Hour']]
-        X = features_df[feature_cols].values
+        # 获取所有可用的数值型特征列
+        all_feature_cols = [col for col in features_df.columns 
+                           if col not in target_cols + ['预测日期']]
+        numeric_feature_cols = features_df[all_feature_cols].select_dtypes(include=[np.number]).columns.tolist()
+        
+        # 根据模型选择特征
+        if model_name:
+            selected_features = self.feature_selector.select_features_for_model(
+                model_name, numeric_feature_cols
+            )
+            logger.info(f"模型 {model_name} 使用 {len(selected_features)} 个选定特征")
+        else:
+            selected_features = numeric_feature_cols
+            logger.info(f"使用所有 {len(selected_features)} 个特征")
+        
+        # 准备特征矩阵
+        X = features_df[selected_features].values
         y = features_df[target_cols].values
         
-        # 时间序列划分（与训练时保持一致）
-        dates = features_df['Date'].unique()
+        # 时间序列划分（基于预测日期）
+        dates = features_df['预测日期'].values
         n_dates = len(dates)
         
+        # 划分比例：训练集80%，验证集10%，测试集10%
         train_end = int(n_dates * 0.8)
         val_end = int(n_dates * 0.9)
         
@@ -100,18 +124,20 @@ class ModelEvaluator:
         test_dates = dates[val_end:]
         
         # 根据日期划分数据集
-        train_mask = features_df['Date'].isin(train_dates)
-        val_mask = features_df['Date'].isin(val_dates)
-        test_mask = features_df['Date'].isin(test_dates)
+        train_mask = features_df['预测日期'].isin(train_dates)
+        val_mask = features_df['预测日期'].isin(val_dates)
+        test_mask = features_df['预测日期'].isin(test_dates)
         
         X_train, y_train = X[train_mask], y[train_mask]
         X_val, y_val = X[val_mask], y[val_mask]
         X_test, y_test = X[test_mask], y[test_mask]
         
         # 保存测试集日期信息用于后续分析
-        test_dates_info = features_df[test_mask][['Date', 'Hour']].copy()
+        test_dates_info = features_df[test_mask][['预测日期']].copy()
         
         logger.info(f"数据准备完成:")
+        logger.info(f"  训练集: {len(X_train)} 样本")
+        logger.info(f"  验证集: {len(X_val)} 样本")
         logger.info(f"  测试集: {len(X_test)} 样本")
         logger.info(f"  测试日期范围: {test_dates[0]} 至 {test_dates[-1]}")
         
@@ -119,7 +145,7 @@ class ModelEvaluator:
             'X_train': X_train, 'y_train': y_train,
             'X_val': X_val, 'y_val': y_val,
             'X_test': X_test, 'y_test': y_test,
-            'feature_cols': feature_cols,
+            'feature_cols': selected_features,
             'target_cols': target_cols,
             'test_dates_info': test_dates_info
         }
