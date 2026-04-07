@@ -12,8 +12,10 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 from typing import Dict, List, Any, Optional
-from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, cross_val_score
 from sklearn.metrics import make_scorer, mean_absolute_error
+import optuna
+from optuna.samplers import TPESampler
 
 # 忽略所有警告
 warnings.filterwarnings('ignore')
@@ -184,6 +186,156 @@ class HyperparameterTuner:
         }
         
         return param_grids.get(model_name, {})
+    
+    def get_bayesian_param_space(self, model_name: str, trial) -> Dict[str, Any]:
+        """
+        获取贝叶斯优化的参数搜索空间（用于optuna）
+        
+        Parameters
+        ----------
+        model_name : str
+            模型名称
+        trial : optuna.Trial
+            optuna试验对象
+            
+        Returns
+        -------
+        params : dict
+            参数字典
+        """
+        if model_name == 'Ridge':
+            return {
+                'estimator__alpha': trial.suggest_float('estimator__alpha', 0.001, 100.0, log=True)
+            }
+        elif model_name == 'Lasso':
+            return {
+                'estimator__alpha': trial.suggest_float('estimator__alpha', 0.0001, 10.0, log=True)
+            }
+        elif model_name == 'ElasticNet':
+            return {
+                'estimator__alpha': trial.suggest_float('estimator__alpha', 0.0001, 10.0, log=True),
+                'estimator__l1_ratio': trial.suggest_float('estimator__l1_ratio', 0.0, 1.0)
+            }
+        elif model_name == 'RandomForest':
+            return {
+                'estimator__n_estimators': trial.suggest_int('estimator__n_estimators', 50, 500),
+                'estimator__max_depth': trial.suggest_int('estimator__max_depth', 3, 30),
+                'estimator__min_samples_split': trial.suggest_int('estimator__min_samples_split', 2, 20),
+                'estimator__min_samples_leaf': trial.suggest_int('estimator__min_samples_leaf', 1, 10)
+            }
+        elif model_name == 'GradientBoosting':
+            return {
+                'estimator__n_estimators': trial.suggest_int('estimator__n_estimators', 50, 500),
+                'estimator__learning_rate': trial.suggest_float('estimator__learning_rate', 0.001, 0.5, log=True),
+                'estimator__max_depth': trial.suggest_int('estimator__max_depth', 2, 10),
+                'estimator__subsample': trial.suggest_float('estimator__subsample', 0.5, 1.0)
+            }
+        elif model_name == 'XGBoost':
+            return {
+                'estimator__n_estimators': trial.suggest_int('estimator__n_estimators', 50, 500),
+                'estimator__learning_rate': trial.suggest_float('estimator__learning_rate', 0.001, 0.5, log=True),
+                'estimator__max_depth': trial.suggest_int('estimator__max_depth', 2, 10),
+                'estimator__subsample': trial.suggest_float('estimator__subsample', 0.5, 1.0),
+                'estimator__colsample_bytree': trial.suggest_float('estimator__colsample_bytree', 0.5, 1.0)
+            }
+        else:
+            return {}
+    
+    def bayesian_optimization(self, model_name: str, data: Dict[str, Any],
+                             n_trials: int = 50, timeout: int = 600) -> Dict[str, Any]:
+        """
+        贝叶斯优化（使用Optuna的TPE算法）
+        
+        Parameters
+        ----------
+        model_name : str
+            模型名称
+        data : dict
+            数据字典
+        n_trials : int
+            试验次数
+        timeout : int
+            超时时间（秒）
+            
+        Returns
+        -------
+        result : dict
+            优化结果
+        """
+        
+        logger.info(f"开始贝叶斯优化: {model_name} (n_trials={n_trials})")
+        
+        # 创建基础模型
+        if model_name in ['Ridge', 'Lasso', 'ElasticNet']:
+            model_type = model_name.lower()
+            if model_name == 'ElasticNet':
+                model_type = 'elastic_net'
+            base_model = create_linear_model(model_type=model_type)
+        elif model_name in ['RandomForest', 'GradientBoosting']:
+            model_map = {
+                'RandomForest': 'random_forest',
+                'GradientBoosting': 'gradient_boosting'
+            }
+            base_model = create_tree_model(model_type=model_map[model_name])
+        elif model_name == 'XGBoost':
+            base_model = create_tree_model(model_type='xgboost')
+        else:
+            logger.error(f"不支持的模型: {model_name}")
+            return {}
+        
+        # 定义目标函数
+        def objective(trial):
+            # 获取参数
+            params = self.get_bayesian_param_space(model_name, trial)
+            if not params:
+                return float('inf')
+            
+            # 创建模型并设置参数
+            model = base_model.model
+            model.set_params(**params)
+            
+            # 使用交叉验证评估
+            try:
+                scores = cross_val_score(
+                    model, data['X_train'], data['y_train'],
+                    scoring='neg_mean_absolute_error',
+                    cv=3,
+                    n_jobs=-1
+                )
+                # 返回负MAE（optuna默认最小化）
+                return -scores.mean()
+            except Exception as e:
+                logger.warning(f"试验失败: {e}")
+                return float('inf')
+        
+        # 创建study并优化
+        study = optuna.create_study(
+            direction='minimize',
+            sampler=TPESampler(seed=42)
+        )
+        
+        study.optimize(objective, n_trials=n_trials, timeout=timeout, show_progress_bar=True)
+        
+        # 获取最佳结果
+        best_params = study.best_params
+        best_score = study.best_value
+        
+        result = {
+            'model': model_name,
+            'method': 'bayesian',
+            'best_params': best_params,
+            'best_score': best_score,
+            'all_results': study.trials_dataframe(),
+            'n_trials': len(study.trials),
+            'study': study
+        }
+        
+        logger.info(f"贝叶斯优化完成:")
+        logger.info(f"  完成试验数: {result['n_trials']}")
+        logger.info(f"  最佳MAE: {best_score:.4f}")
+        logger.info(f"  最佳参数: {best_params}")
+        
+        return result
     
     def grid_search(self, model_name: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -358,8 +510,7 @@ class HyperparameterTuner:
         elif method == 'random':
             result = self.random_search(model_name, data)
         elif method == 'bayesian':
-            logger.warning("贝叶斯优化暂未实现，使用随机搜索代替")
-            result = self.random_search(model_name, data)
+            result = self.bayesian_optimization(model_name, data)
         else:
             logger.error(f"未知的调优方法: {method}")
             return {}
