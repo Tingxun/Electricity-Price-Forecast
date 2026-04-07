@@ -65,6 +65,7 @@ class FeatureEngineer:
             '水电出力-日前',
             '联络线计划-日前',
             '非市场化机组出力-日前',
+            '平均出清价格-日前（元/MWh）',
         ]
         
         # 列名映射（处理带单位和不带单位的情况）
@@ -344,16 +345,26 @@ class FeatureEngineer:
 
 
 def main():
-    """测试特征工程"""
-    from data_loader import DataLoader
-    
+    """
+    特征工程主函数
+    从processed数据生成特征，保存到features目录
+    """
     print("=" * 60)
-    print("测试特征工程")
+    print("开始生成特征 (T+1预测场景)")
     print("=" * 60)
     
-    # 加载数据
-    loader = DataLoader()
-    df = loader.load_processed_data()
+    # 检查processed数据是否存在
+    processed_file = config.data_paths['processed'] / 'processed_data.csv'
+    if not processed_file.exists():
+        logger.error(f"processed数据不存在: {processed_file}")
+        logger.error("请先运行 data_preprocessing.py 进行数据预处理")
+        return
+    
+    # 加载processed数据
+    logger.info(f"加载processed数据: {processed_file}")
+    df = pd.read_csv(processed_file)
+    df['日期'] = pd.to_datetime(df['日期'])
+    logger.info(f"数据加载完成: {len(df)} 条记录")
     
     # 创建特征
     engineer = FeatureEngineer()
@@ -363,8 +374,9 @@ def main():
     engineer.save_features(features_df, target_cols)
     
     print("\n" + "=" * 60)
-    print("特征工程 完成")
+    print("特征生成完成")
     print("=" * 60)
+    logger.info(f"特征数据保存在: {config.data_paths['features']}")
 
 
 if __name__ == '__main__':

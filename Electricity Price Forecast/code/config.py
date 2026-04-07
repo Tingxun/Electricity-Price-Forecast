@@ -182,7 +182,7 @@ class Config:
         # 评估指标配置
         self.metrics_config = {
             'primary_metrics': ['MSE', 'MAE', 'sMAPE'],
-            'secondary_metrics': ['RMSE', 'MAPE', 'R2'],
+            'secondary_metrics': ['RMSE', 'R2'],
             'calculate_per_hour': True  # 是否计算每小时的指标
         }
         

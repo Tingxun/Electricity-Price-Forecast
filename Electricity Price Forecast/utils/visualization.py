@@ -221,7 +221,7 @@ class Visualizer:
             return ""
     
     def plot_model_comparison(self, results_df: pd.DataFrame, 
-                             metrics: List[str] = ['mae', 'rmse', 'mape', 'smape'],
+                             metrics: List[str] = ['mae', 'rmse', 'smape'],
                              save: bool = True) -> str:
         """
         绘制模型性能对比图
@@ -503,7 +503,18 @@ class Visualizer:
                 path = self.plot_hourly_performance(hourly_mae, model_names, 'MAE')
                 saved_paths.append(path)
         
-        # 5. 时间序列对比图
+        # 5. 每小时sMAPE对比图
+        if 'hourly_smape' in results_df.columns:
+            hourly_smape = {}
+            for _, row in results_df.iterrows():
+                if row['name'] in model_names:
+                    hourly_smape[row['name']] = row['hourly_smape']
+            
+            if hourly_smape:
+                path = self.plot_hourly_performance(hourly_smape, model_names, 'sMAPE')
+                saved_paths.append(path)
+        
+        # 6. 时间序列对比图
         if predictions:
             path = self.plot_time_series(y_true, predictions, 
                                         pd.date_range('2025-03-01', periods=len(y_true), freq='H'))
@@ -540,7 +551,6 @@ def main():
         'name': ['Model1', 'Model2', 'Model3'],
         'mae': [5.2, 4.8, 5.5],
         'rmse': [7.1, 6.5, 7.8],
-        'mape': [8.5, 7.9, 9.1],
         'smape': [8.3, 7.7, 8.9]
     })
     visualizer.plot_model_comparison(results_df, save=True)

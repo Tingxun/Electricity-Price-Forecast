@@ -25,7 +25,7 @@ from feature_selector import FeatureSelector
 from models import (
     create_linear_model, create_tree_model, create_epf_model
 )
-from utils.metrics import calculate_mae, calculate_rmse, calculate_mape, calculate_smape
+from utils.metrics import calculate_mae, calculate_rmse, calculate_smape
 
 # 配置日志
 logging.basicConfig(
@@ -286,7 +286,6 @@ class ModelTrainer:
             val_predictions = model.predict(data['X_val'])
             val_mae = calculate_mae(data['y_val'], val_predictions)
             val_rmse = calculate_rmse(data['y_val'], val_predictions)
-            val_mape = calculate_mape(data['y_val'], val_predictions)
             val_smape = calculate_smape(data['y_val'], val_predictions)
             
             # 保存模型
@@ -302,7 +301,6 @@ class ModelTrainer:
                 'training_time': training_time,
                 'val_mae': val_mae,
                 'val_rmse': val_rmse,
-                'val_mape': val_mape,
                 'val_smape': val_smape,
                 'save_path': save_path
             }
@@ -311,7 +309,6 @@ class ModelTrainer:
             logger.info(f"  训练时间: {training_time:.2f}秒")
             logger.info(f"  验证集MAE: {val_mae:.4f}")
             logger.info(f"  验证集RMSE: {val_rmse:.4f}")
-            logger.info(f"  验证集MAPE: {val_mape:.2f}%")
             logger.info(f"  验证集sMAPE: {val_smape:.2f}%")
             
         except Exception as e:
@@ -397,7 +394,7 @@ class ModelTrainer:
         success_models = results_df[results_df['status'] == 'success']
         if len(success_models) > 0:
             logger.info(f"\n成功训练的模型 ({len(success_models)}/{len(results_df)}):")
-            summary = success_models[['name', 'val_mae', 'val_rmse', 'val_mape', 'training_time']].sort_values('val_mae')
+            summary = success_models[['name', 'val_mae', 'val_rmse', 'val_smape', 'training_time']].sort_values('val_mae')
             logger.info("\n" + str(summary))
 
 

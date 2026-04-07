@@ -89,6 +89,16 @@ class DataPreprocessor:
         logger.info(f"处理缺失值 (策略: {strategy})...")
         df = df.copy()
         
+        # 删除5月5日及以前的所有数据，确保时间连续性
+        cutoff_date = pd.Timestamp('2024-05-05')
+        before_drop = len(df)
+        df = df[df['日期'] > cutoff_date].copy()
+        after_drop = len(df)
+        deleted_days = before_drop - after_drop
+        if deleted_days > 0:
+            logger.info(f"为确保时间连续性，已删除{cutoff_date.date()}及以前的 {deleted_days} 条记录")
+            logger.info(f"数据时间范围更新为: {df['日期'].min().date()} 至 {df['日期'].max().date()}")
+        
         numeric_cols = df.select_dtypes(include=[np.number]).columns
         
         for col in numeric_cols:

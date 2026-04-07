@@ -191,7 +191,6 @@ def evaluate_all_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
         'MSE': calculate_mse(y_true, y_pred),
         'RMSE': calculate_rmse(y_true, y_pred),
         'MAE': calculate_mae(y_true, y_pred),
-        'MAPE': calculate_mape(y_true, y_pred),
         'sMAPE': calculate_smape(y_true, y_pred),
         'R2': calculate_r2(y_true, y_pred)
     }

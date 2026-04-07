@@ -22,7 +22,7 @@ from data_loader import DataLoader
 from feature_engineering import FeatureEngineer
 from models import BaseModel
 from utils.metrics import (
-    calculate_mae, calculate_rmse, calculate_mape, 
+    calculate_mae, calculate_rmse, 
     calculate_smape, calculate_r2, calculate_mse
 )
 
@@ -183,16 +183,15 @@ class ModelEvaluator:
             mae = calculate_mae(y_test, predictions)
             mse = calculate_mse(y_test, predictions)
             rmse = calculate_rmse(y_test, predictions)
-            mape = calculate_mape(y_test, predictions)
             smape = calculate_smape(y_test, predictions)
             r2 = calculate_r2(y_test, predictions)
             
             # 计算每个小时的指标
             hourly_mae = []
-            hourly_mape = []
+            hourly_smape = []
             for h in range(y_test.shape[1]):
                 hourly_mae.append(calculate_mae(y_test[:, h], predictions[:, h]))
-                hourly_mape.append(calculate_mape(y_test[:, h], predictions[:, h]))
+                hourly_smape.append(calculate_smape(y_test[:, h], predictions[:, h]))
             
             eval_time = time.time() - start_time
             
@@ -203,11 +202,10 @@ class ModelEvaluator:
                 'mae': mae,
                 'mse': mse,
                 'rmse': rmse,
-                'mape': mape,
                 'smape': smape,
                 'r2': r2,
                 'hourly_mae': hourly_mae,
-                'hourly_mape': hourly_mape,
+                'hourly_smape': hourly_smape,
                 'predictions': predictions
             }
             
@@ -215,7 +213,6 @@ class ModelEvaluator:
             logger.info(f"  评估时间: {eval_time:.2f}秒")
             logger.info(f"  MAE: {mae:.4f}")
             logger.info(f"  RMSE: {rmse:.4f}")
-            logger.info(f"  MAPE: {mape:.2f}%")
             logger.info(f"  sMAPE: {smape:.2f}%")
             logger.info(f"  R²: {r2:.4f}")
             
@@ -340,7 +337,7 @@ class ModelEvaluator:
         # 1. 保存评估指标CSV
         metrics_path = os.path.join(self.config.result_paths['logs'], 
                                     f'evaluation_metrics_{timestamp}.csv')
-        metrics_df = results_df[['name', 'mae', 'mse', 'rmse', 'mape', 'smape', 'r2', 'eval_time']].copy()
+        metrics_df = results_df[['name', 'mae', 'mse', 'rmse', 'smape', 'r2', 'eval_time']].copy()
         metrics_df = metrics_df.sort_values('mae')
         metrics_df.to_csv(metrics_path, index=False, encoding='utf-8-sig')
         logger.info(f"评估指标已保存: {metrics_path}")
@@ -373,12 +370,12 @@ class ModelEvaluator:
             # 总体性能排名
             f.write("【总体性能排名】\n")
             f.write("-" * 80 + "\n")
-            f.write(f"{'排名':<6}{'模型名称':<20}{'MAE':<12}{'RMSE':<12}{'MAPE(%)':<12}{'sMAPE(%)':<12}{'R²':<10}\n")
+            f.write(f"{'排名':<6}{'模型名称':<20}{'MAE':<12}{'RMSE':<12}{'sMAPE(%)':<12}{'R²':<10}\n")
             f.write("-" * 80 + "\n")
             
             for i, row in metrics_df.iterrows():
                 f.write(f"{i+1:<6}{row['name']:<20}{row['mae']:<12.4f}{row['rmse']:<12.4f}"
-                       f"{row['mape']:<12.2f}{row['smape']:<12.2f}{row['r2']:<10.4f}\n")
+                       f"{row['smape']:<12.2f}{row['r2']:<10.4f}\n")
             
             f.write("\n")
             
@@ -391,7 +388,6 @@ class ModelEvaluator:
                 f.write(f"  MAE:  {row['mae']:.4f}\n")
                 f.write(f"  MSE:  {row['mse']:.4f}\n")
                 f.write(f"  RMSE: {row['rmse']:.4f}\n")
-                f.write(f"  MAPE: {row['mape']:.2f}%\n")
                 f.write(f"  sMAPE:{row['smape']:.2f}%\n")
                 f.write(f"  R²:   {row['r2']:.4f}\n")
                 
@@ -413,7 +409,7 @@ class ModelEvaluator:
             best_model = metrics_df.iloc[0]
             logger.info(f"\n最佳模型: {best_model['name']}")
             logger.info(f"  MAE: {best_model['mae']:.4f}")
-            logger.info(f"  MAPE: {best_model['mape']:.2f}%")
+            logger.info(f"  sMAPE: {best_model['smape']:.2f}%")
 
 
 def main():
@@ -452,7 +448,7 @@ def main():
         print("\n" + "=" * 80)
         print("评估结果汇总")
         print("=" * 80)
-        print(results[['name', 'mae', 'rmse', 'mape', 'smape', 'r2']].to_string(index=False))
+        print(results[['name', 'mae', 'rmse', 'smape', 'r2']].to_string(index=False))
 
 
 if __name__ == '__main__':
