@@ -7,7 +7,14 @@ import os
 import sys
 import argparse
 import logging
+import warnings
 from datetime import datetime
+
+# 禁用 oneDNN
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+
+# 忽略所有警告
+warnings.filterwarnings('ignore')
 
 # 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

@@ -295,9 +295,6 @@ class ModelEvaluator:
         logger.info("开始批量评估模型")
         logger.info("=" * 60)
         
-        # 准备数据
-        data = self.prepare_data()
-        
         # 查找保存的模型
         saved_models = self.find_saved_models()
         
@@ -323,6 +320,9 @@ class ModelEvaluator:
             if model is None:
                 continue
             
+            # 为每个模型单独准备数据（使用模型训练时的特征）
+            data = self.prepare_data(model_name=model_info['name'])
+            
             # 评估模型
             result = self.evaluate_model(model_info['name'], model, data)
             results.append(result)
@@ -335,7 +335,10 @@ class ModelEvaluator:
         results_df = pd.DataFrame([r for r in results if r['status'] == 'success'])
         
         # 保存结果
-        self.save_evaluation_report(results_df, all_predictions, data)
+        if len(results_df) > 0:
+            self.save_evaluation_report(results_df, all_predictions, data)
+        else:
+            logger.warning("没有成功的评估结果，跳过保存报告")
         
         logger.info("\n" + "=" * 60)
         logger.info("批量评估完成")

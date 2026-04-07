@@ -90,16 +90,16 @@ class DataPreprocessor:
         df = df.copy()
         
         # 删除5月5日及以前的所有数据，确保时间连续性
-        cutoff_date = pd.Timestamp('2024-05-05')
+        cutoff_date1 = pd.Timestamp('2024-05-27')
+        cutoff_date2 = pd.Timestamp('2025-03-27')
         before_drop = len(df)
-        df = df[df['日期'] > cutoff_date].copy()
+        df = df[(df['日期'] > cutoff_date1) & (df['日期'] < cutoff_date2)].copy()
         after_drop = len(df)
         deleted_days = before_drop - after_drop
         if deleted_days > 0:
-            logger.info(f"为确保时间连续性，已删除{cutoff_date.date()}及以前的 {deleted_days} 条记录")
+            logger.info(f"为确保时间连续性，已删除{cutoff_date1.date()}至{cutoff_date2.date()}及以前的 {deleted_days} 条记录")
             logger.info(f"数据时间范围更新为: {df['日期'].min().date()} 至 {df['日期'].max().date()}")
         
-        '''
         numeric_cols = df.select_dtypes(include=[np.number]).columns 
         for col in numeric_cols:
             missing_count = df[col].isna().sum()
@@ -111,7 +111,7 @@ class DataPreprocessor:
                     df[col] = df[col].ffill().bfill()
                 
                 logger.info(f"  {col}: {missing_count} 个缺失值已填充")
-        '''
+        
         return df
     
     def handle_outliers(self, df: pd.DataFrame, method: str = 'iqr') -> pd.DataFrame:
@@ -180,7 +180,7 @@ class DataPreprocessor:
         # 数据清洗
         df = self.clean_data(df)
 
-        # 处理缺失值（需要在删除日期列之前执行，因为handle_missing_values需要日期列）
+        # 处理缺失值
         df = self.handle_missing_values(df, strategy='interpolate')
         
         # 处理异常值
