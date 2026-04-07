@@ -86,18 +86,19 @@ class HyperparameterTuner:
             logger.error("请先运行: python main.py features")
             raise
         
-        # 获取所有可用的数值型特征列
+        # 获取所有可用的数值型特征列（排除目标变量和日期列）
         all_feature_cols = [col for col in features_df.columns 
                            if col not in target_cols + ['预测日期']]
         numeric_feature_cols = features_df[all_feature_cols].select_dtypes(include=[np.number]).columns.tolist()
         
-        # 根据模型选择特征
+        # 根据模型选择特征（如果指定了模型名称）
         if model_name:
             selected_features = self.feature_selector.select_features_for_model(
                 model_name, numeric_feature_cols
             )
             logger.info(f"模型 {model_name} 使用 {len(selected_features)} 个选定特征")
         else:
+            # 默认使用所有数值特征
             selected_features = numeric_feature_cols
             logger.info(f"使用所有 {len(selected_features)} 个特征")
         
@@ -123,6 +124,8 @@ class HyperparameterTuner:
         logger.info(f"数据准备完成:")
         logger.info(f"  训练集: {len(X_train)} 样本")
         logger.info(f"  验证集: {len(X_val)} 样本")
+        logger.info(f"  特征数: {len(selected_features)}")
+        logger.info(f"  目标数: {len(target_cols)}")
         
         return {
             'X_train': X_train, 'y_train': y_train,
@@ -133,6 +136,8 @@ class HyperparameterTuner:
     def get_param_grid(self, model_name: str) -> Dict[str, Any]:
         """
         获取模型的参数搜索空间
+        
+        由于模型被MultiOutputRegressor包装，所有参数都需要加上estimator__前缀
         
         Parameters
         ----------
@@ -146,36 +151,31 @@ class HyperparameterTuner:
         """
         param_grids = {
             'Ridge': {
-                'alpha': [0.01, 0.1, 1.0, 10.0, 100.0]
+                'estimator__alpha': [0.01, 0.1, 1.0, 10.0, 100.0]
             },
             'Lasso': {
-                'alpha': [0.001, 0.01, 0.1, 1.0]
+                'estimator__alpha': [0.001, 0.01, 0.1, 1.0]
             },
             'ElasticNet': {
-                'alpha': [0.001, 0.01, 0.1, 1.0],
-                'l1_ratio': [0.1, 0.3, 0.5, 0.7, 0.9]
-            },
-            'DecisionTree': {
-                'max_depth': [5, 10, 15, 20, None],
-                'min_samples_split': [2, 5, 10],
-                'min_samples_leaf': [1, 2, 4]
+                'estimator__alpha': [0.001, 0.01, 0.1, 1.0],
+                'estimator__l1_ratio': [0.1, 0.3, 0.5, 0.7, 0.9]
             },
             'RandomForest': {
-                'n_estimators': [50, 100, 200],
-                'max_depth': [10, 20, None],
-                'min_samples_split': [2, 5],
-                'min_samples_leaf': [1, 2]
+                'estimator__n_estimators': [50, 100, 200],
+                'estimator__max_depth': [10, 20, None],
+                'estimator__min_samples_split': [2, 5],
+                'estimator__min_samples_leaf': [1, 2]
             },
             'GradientBoosting': {
-                'n_estimators': [50, 100, 200],
-                'learning_rate': [0.01, 0.1, 0.2],
-                'max_depth': [3, 5, 7]
+                'estimator__n_estimators': [50, 100, 200],
+                'estimator__learning_rate': [0.01, 0.1, 0.2],
+                'estimator__max_depth': [3, 5, 7]
             },
             'XGBoost': {
-                'n_estimators': [50, 100, 200],
-                'learning_rate': [0.01, 0.1, 0.2],
-                'max_depth': [3, 5, 7],
-                'subsample': [0.8, 1.0]
+                'estimator__n_estimators': [50, 100, 200],
+                'estimator__learning_rate': [0.01, 0.1, 0.2],
+                'estimator__max_depth': [3, 5, 7],
+                'estimator__subsample': [0.8, 1.0]
             }
         }
         
@@ -235,8 +235,8 @@ class HyperparameterTuner:
             verbose=1
         )
         
-        # 拟合（使用第一个目标变量进行简化）
-        grid_search.fit(data['X_train'], data['y_train'][:, 0])
+        # 拟合（使用完整的多输出y）
+        grid_search.fit(data['X_train'], data['y_train'])
         
         result = {
             'model': model_name,
@@ -309,7 +309,7 @@ class HyperparameterTuner:
             random_state=42
         )
         
-        random_search.fit(data['X_train'], data['y_train'][:, 0])
+        random_search.fit(data['X_train'], data['y_train'])
         
         result = {
             'model': model_name,
@@ -345,8 +345,8 @@ class HyperparameterTuner:
         logger.info(f"开始超参数调优: {model_name} ({method})")
         logger.info("=" * 60)
         
-        # 准备数据
-        data = self.prepare_data()
+        # 准备数据（传入模型名称以使用feature_config.yaml中的特征配置）
+        data = self.prepare_data(model_name)
         
         # 执行调优
         if method == 'grid':

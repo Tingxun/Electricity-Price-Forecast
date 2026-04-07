@@ -345,8 +345,6 @@ model_features:
       - dayahead_hydro
       - dayahead_other
       - lag_price_1d
-      - lag_price_2d
-      - lag_price_3d
       - lag_price_7d
     description: "完整特征，集成学习抗过拟合"
     normalize: false

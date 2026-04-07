@@ -84,7 +84,7 @@ class DataPreprocessor:
         df : pd.DataFrame
             输入数据
         strategy : str
-            缺失值处理策略: 'interpolate', 'median', 'mean', 'forward'
+            缺失值处理策略: 'interpolate', 'forward'
         """
         logger.info(f"处理缺失值 (策略: {strategy})...")
         df = df.copy()
@@ -99,23 +99,19 @@ class DataPreprocessor:
             logger.info(f"为确保时间连续性，已删除{cutoff_date.date()}及以前的 {deleted_days} 条记录")
             logger.info(f"数据时间范围更新为: {df['日期'].min().date()} 至 {df['日期'].max().date()}")
         
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        
+        '''
+        numeric_cols = df.select_dtypes(include=[np.number]).columns 
         for col in numeric_cols:
             missing_count = df[col].isna().sum()
             if missing_count > 0:
                 if strategy == 'interpolate':
                     # 时间序列插值
                     df[col] = df[col].interpolate(method='linear', limit_direction='both')
-                elif strategy == 'median':
-                    df[col] = df[col].fillna(df[col].median())
-                elif strategy == 'mean':
-                    df[col] = df[col].fillna(df[col].mean())
                 elif strategy == 'forward':
                     df[col] = df[col].ffill().bfill()
                 
                 logger.info(f"  {col}: {missing_count} 个缺失值已填充")
-        
+        '''
         return df
     
     def handle_outliers(self, df: pd.DataFrame, method: str = 'iqr') -> pd.DataFrame:
@@ -178,23 +174,39 @@ class DataPreprocessor:
         logger.info("开始数据预处理")
         logger.info("=" * 60)
         
-        # 1. 加载原始数据
+        # 加载原始数据
         df = self.load_raw_data()
         
-        # 2. 数据清洗
+        # 数据清洗
         df = self.clean_data(df)
-        
-        # 3. 处理缺失值
+
+        # 处理缺失值（需要在删除日期列之前执行，因为handle_missing_values需要日期列）
         df = self.handle_missing_values(df, strategy='interpolate')
         
-        # 4. 处理异常值
+        # 处理异常值
         df = self.handle_outliers(df, method='iqr')
+
+        # 特征初筛与创建
+        df['新能源出力-日前'] = (df['光伏出力-日前'] + df['风电出力-日前']).round(3)
+
+        realtime_features_to_drop = [
+            '时间戳',
+            '风电出力-实时',
+            '光伏出力-实时',
+            '水电出力-实时',
+            '系统负荷-实时',
+            '非市场化机组出力-实时',
+            '联络线计划-实时',
+            '水电出力-日前',
+            '光伏出力-日前',
+            '风电出力-日前',
+            '联络线计划-日前'
+        ]
         
+        # 只删除存在的列
+        cols_to_drop = [col for col in realtime_features_to_drop if col in df.columns]
+        df = df.drop(columns=cols_to_drop)
         self.processed_data = df
-        
-        logger.info("=" * 60)
-        logger.info("数据预处理完成")
-        logger.info("=" * 60)
         
         return df
     
@@ -217,10 +229,6 @@ class DataPreprocessor:
         # 保存数据信息
         info = {
             'total_records': len(self.processed_data),
-            'date_range': {
-                'start': str(self.processed_data['日期'].min()),
-                'end': str(self.processed_data['日期'].max())
-            },
             'columns': list(self.processed_data.columns),
             'numeric_columns': list(self.processed_data.select_dtypes(include=[np.number]).columns)
         }
