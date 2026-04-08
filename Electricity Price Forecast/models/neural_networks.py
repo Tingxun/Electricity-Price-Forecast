@@ -545,6 +545,206 @@ class TransformerModel(PyTorchModel):
         return super().predict(X)
 
 
+class ResidualBlock(nn.Module):
+    """
+    残差块
+    """
+    
+    def __init__(self, channels):
+        """
+        初始化残差块
+        
+        Parameters
+        ----------
+        channels : int
+            通道数
+        """
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv1d(channels, channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm1d(channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv1d(channels, channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm1d(channels)
+        
+    def forward(self, x):
+        """
+        前向传播
+        """
+        identity = x
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out += identity
+        out = self.relu(out)
+        return out
+
+
+class RUNetModel(PyTorchModel):
+    """
+    残差 U 型网络模型（RU-net）
+    
+    基于文献《基于残差 U 型网络的低压台区电力缺失数据补全方法》
+    适用于高维度、非线性电力数据的缺失值补全
+    """
+    
+    def __init__(self, name: str = "RUNet", input_dim: int = 100, output_dim: int = 24,
+                 base_channels: int = 64, num_levels: int = 4, **kwargs):
+        """
+        初始化 RU-net 模型
+        
+        Parameters
+        ----------
+        name : str
+            模型名称
+        input_dim : int
+            输入特征维度（时间序列长度）
+        output_dim : int
+            输出维度（24 点预测）
+        base_channels : int
+            基础通道数
+        num_levels : int
+            U 型网络层数
+        **kwargs : dict
+            模型参数
+        """
+        super().__init__(name=name, **kwargs)
+        
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.base_channels = base_channels
+        self.num_levels = num_levels
+        
+        # 编码器（下采样路径）
+        self.encoder = nn.ModuleList()
+        in_channels = 1  # 输入通道数
+        
+        for i in range(num_levels):
+            out_channels = base_channels * (2 ** i)
+            self.encoder.append(
+                nn.Sequential(
+                    nn.Conv1d(in_channels, out_channels, kernel_size=3, padding=1).to(self.device),
+                    nn.BatchNorm1d(out_channels).to(self.device),
+                    nn.ReLU(inplace=True).to(self.device),
+                    ResidualBlock(out_channels).to(self.device),
+                    nn.MaxPool1d(kernel_size=2).to(self.device) if i < num_levels - 1 else nn.Identity().to(self.device)
+                )
+            )
+            in_channels = out_channels
+        
+        # 瓶颈层
+        bottleneck_channels = base_channels * (2 ** (num_levels - 1))
+        self.bottleneck = nn.Sequential(
+            ResidualBlock(bottleneck_channels).to(self.device),
+            ResidualBlock(bottleneck_channels).to(self.device)
+        ).to(self.device)
+        
+        # 解码器（上采样路径）- 简化版本（不使用跳跃连接）
+        self.decoder = nn.ModuleList()
+        for i in range(num_levels - 1, 0, -1):
+            up_channels = base_channels * (2 ** i)
+            out_channels = base_channels * (2 ** (i - 1))
+            
+            # 上采样 + 残差块
+            self.decoder.append(
+                nn.Sequential(
+                    nn.ConvTranspose1d(up_channels, out_channels, kernel_size=2, stride=2).to(self.device),
+                    nn.BatchNorm1d(out_channels).to(self.device),
+                    nn.ReLU(inplace=True).to(self.device),
+                    ResidualBlock(out_channels).to(self.device),
+                    ResidualBlock(out_channels).to(self.device),
+                ).to(self.device)
+            )
+        
+        # 输出层
+        self.output_layer = nn.Sequential(
+            nn.Conv1d(base_channels, 32, kernel_size=3, padding=1).to(self.device),
+            nn.BatchNorm1d(32).to(self.device),
+            nn.ReLU(inplace=True).to(self.device),
+            nn.Conv1d(32, 1, kernel_size=1).to(self.device),
+            nn.Flatten().to(self.device)
+        ).to(self.device)
+        
+        # 将模型设置为自身
+        self.model = self
+        
+        print(f"RU-net 模型已创建：{input_dim} -> U-Net (levels={num_levels}) -> {output_dim}")
+    
+    def forward(self, x):
+        """
+        前向传播
+        
+        Parameters
+        ----------
+        x : torch.Tensor
+            输入张量，形状为 (batch, input_dim) 或 (batch, 1, input_dim)
+        """
+        # 确保输入是 3D 张量 (batch, channels, seq_len)
+        if len(x.shape) == 2:
+            x = x.unsqueeze(1)
+        elif len(x.shape) == 3 and x.shape[1] != 1:
+            x = x.transpose(1, 2)
+        
+        # 编码器路径
+        encoder_outputs = []
+        for enc_layer in self.encoder:
+            x = enc_layer(x)
+            encoder_outputs.append(x)
+        
+        # 瓶颈层
+        x = self.bottleneck(x)
+        
+        # 解码器路径（简化版本：不使用跳跃连接）
+        for dec_layer in self.decoder:
+            x = dec_layer(x)
+        
+        # 输出层
+        x = self.output_layer(x)
+        
+        # 调整输出维度
+        if x.shape[1] != self.output_dim:
+            x = nn.functional.interpolate(x.unsqueeze(1), size=self.output_dim, mode='linear').squeeze(1)
+        
+        return x
+    
+    def fit(self, X, y, **kwargs) -> 'RUNetModel':
+        """
+        训练 RU-net 模型
+        
+        Parameters
+        ----------
+        X : array-like
+            训练特征，形状为 (batch, input_dim)
+        y : array-like
+            训练目标，形状为 (batch, output_dim)
+        **kwargs : dict
+            额外的训练参数
+            
+        Returns
+        -------
+        self : RUNetModel
+            返回训练好的模型实例
+        """
+        return super().fit(X, y, **kwargs)
+    
+    def predict(self, X) -> np.ndarray:
+        """
+        使用 RU-net 模型进行预测
+        
+        Parameters
+        ----------
+        X : array-like
+            预测特征，形状为 (batch, input_dim)
+            
+        Returns
+        -------
+        predictions : array-like
+            预测结果，形状为 (batch, output_dim)
+        """
+        return super().predict(X)
+
+
 # 模型工厂函数
 def create_neural_network(model_type: str, **kwargs) -> BaseModel:
     """
@@ -553,7 +753,7 @@ def create_neural_network(model_type: str, **kwargs) -> BaseModel:
     Parameters
     ----------
     model_type : str
-        模型类型: 'mlp', 'lstm', 'gru', 'transformer'
+        模型类型：'mlp', 'lstm', 'gru', 'transformer', 'runet'
     **kwargs : dict
         模型参数
         
@@ -566,10 +766,11 @@ def create_neural_network(model_type: str, **kwargs) -> BaseModel:
         'mlp': MLPModel,
         'lstm': LSTMModel,
         'gru': GRUModel,
-        'transformer': TransformerModel
+        'transformer': TransformerModel,
+        'runet': RUNetModel
     }
     
     if model_type not in model_map:
-        raise ValueError(f"不支持的模型类型: {model_type}")
+        raise ValueError(f"不支持的模型类型：{model_type}")
     
     return model_map[model_type](**kwargs)
