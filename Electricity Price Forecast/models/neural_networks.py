@@ -21,7 +21,7 @@ class PyTorchModel(BaseModel, nn.Module):
     def __init__(self, name: str = "PyTorchModel", **kwargs):
         """
         初始化PyTorch模型
-        
+
         Parameters
         ----------
         name : str
@@ -31,14 +31,16 @@ class PyTorchModel(BaseModel, nn.Module):
         """
         BaseModel.__init__(self, name=name, **kwargs)
         nn.Module.__init__(self)
-        
+
         # 默认参数
         self.batch_size = kwargs.get('batch_size', 32)
         self.epochs = kwargs.get('epochs', 100)
         self.lr = kwargs.get('lr', 0.001)
         self.device = kwargs.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
-        
-        print(f"使用设备: {self.device}")
+        self.verbose = kwargs.get('verbose', True)
+
+        if self.verbose:
+            print(f"使用设备: {self.device}")
     
     def parameters(self, recurse: bool = True):
         """
@@ -102,13 +104,14 @@ class PyTorchModel(BaseModel, nn.Module):
                 running_loss += loss.item()
             
             # 打印训练进度
-            if (epoch + 1) % 10 == 0:
+            if self.verbose and (epoch + 1) % 10 == 0:
                 avg_loss = running_loss / len(dataloader)
                 print(f"Epoch [{epoch+1}/{self.epochs}], Loss: {avg_loss:.4f}")
-        
+
         self.is_fitted = True
         training_time = time.time() - start_time
-        print(f"{self.name} 训练完成，耗时: {training_time:.2f} 秒")
+        if self.verbose:
+            print(f"{self.name} 训练完成，耗时: {training_time:.2f} 秒")
         return self
     
     def predict(self, X) -> np.ndarray:
@@ -246,9 +249,10 @@ class MLPModel(PyTorchModel):
         
         # 添加输出层
         layers.append(nn.Linear(current_dim, output_dim))
-        
+
         self.model = nn.Sequential(*layers).to(self.device)
-        print(f"MLP模型已创建: {input_dim} -> {hidden_dims} -> {output_dim}")
+        if self.verbose:
+            print(f"MLP模型已创建: {input_dim} -> {hidden_dims} -> {output_dim}")
 
 
 class LSTMModel(PyTorchModel):
