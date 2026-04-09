@@ -243,7 +243,7 @@ class LinearInterpolationImputer(BaseImputer):
 
 
 class NeuralNetworkImputer(BaseImputer):
-    """神经网络填充器（MLP）"""
+    """神经网络填充器（MLP），使用价格历史+小时特征"""
     
     def __init__(self, window_size: int = 48, output_size: int = 24,
                  hidden_dims: List[int] = None,
@@ -257,10 +257,28 @@ class NeuralNetworkImputer(BaseImputer):
         self.batch_size = batch_size
         self.lr = lr
         self.model = None
+        self.hour_feature = None
         
-    def fit(self, data: np.ndarray, missing_mask: np.ndarray):
-        """训练神经网络模型"""
+    def fit(self, data: np.ndarray, missing_mask: np.ndarray, hour_feature: np.ndarray = None,
+            original_data: np.ndarray = None):
+        """
+        训练神经网络模型
+        
+        Parameters
+        ----------
+        data : np.ndarray
+            目标价格数据（包含缺失值，用于构建输入特征）
+        missing_mask : np.ndarray
+            缺失值掩码
+        hour_feature : np.ndarray
+            小时特征（0-23）
+        original_data : np.ndarray, optional
+            原始完整数据（不包含缺失值，用于训练目标）
+        """
         print(f"\n  训练神经网络模型 ({self.epochs}轮, lr={self.lr})...")
+        
+        # 保存小时特征
+        self.hour_feature = hour_feature
         
         # 添加项目根目录到路径
         project_root = os.path.join(os.path.dirname(__file__), '..')
@@ -273,20 +291,67 @@ class NeuralNetworkImputer(BaseImputer):
             print(f"  警告：无法导入 MLPModel，使用线性插值代替：{e}")
             return
         
-        # 准备训练数据
-        valid_data = data[~missing_mask]
+        # 使用原始完整数据作为训练目标，如果没有则使用线性插值填充
+        if original_data is not None:
+            train_target = original_data
+            # 对于输入特征，使用线性插值填充缺失值
+            input_data = pd.Series(data).interpolate(method='linear').values
+            input_data = np.nan_to_num(input_data, nan=np.nanmean(input_data))
+        else:
+            # 如果没有提供原始数据，使用插值填充
+            train_target = pd.Series(data).interpolate(method='linear').values
+            train_target = np.nan_to_num(train_target, nan=np.nanmean(train_target))
+            input_data = train_target
         
-        if len(valid_data) < self.window_size + self.output_size:
+        # 计算价格特征的统计信息用于归一化
+        self.price_mean = np.mean(input_data)
+        self.price_std = np.std(input_data)
+        if self.price_std == 0:
+            self.price_std = 1.0
+        
+        valid_indices = np.where(~missing_mask)[0]
+        
+        if len(valid_indices) < self.window_size + self.output_size:
             print(f"  警告：有效数据不足")
             return
         
-        # 构建训练样本
+        # 构建训练样本：价格历史 + 小时特征
         X_list = []
         y_list = []
         
-        for i in range(len(valid_data) - self.window_size - self.output_size + 1):
-            X_list.append(valid_data[i:i + self.window_size])
-            y_list.append(valid_data[i + self.window_size:i + self.window_size + self.output_size])
+        for i in range(len(valid_indices) - self.window_size - self.output_size + 1):
+            idx = valid_indices[i]
+            end_idx = idx + self.window_size
+            
+            # 检查窗口内是否连续且有效
+            if end_idx >= len(data):
+                continue
+            if np.any(missing_mask[idx:end_idx]):
+                continue
+            
+            # 检查目标区域是否有缺失值
+            target_end = end_idx + self.output_size
+            if target_end > len(data) or np.any(missing_mask[end_idx:target_end]):
+                continue
+            
+            # 价格历史（使用插值填充后的数据作为输入，并进行标准化）
+            price_history = input_data[idx:end_idx]
+            price_history_normalized = (price_history - self.price_mean) / self.price_std
+            
+            # 当前时刻小时特征（cos/sin循环编码）
+            if hour_feature is not None and end_idx < len(hour_feature):
+                hour = float(hour_feature[end_idx]) % 24
+                # 循环编码：cos和sin
+                hour_cos = np.cos(2 * np.pi * hour / 24)
+                hour_sin = np.sin(2 * np.pi * hour / 24)
+                # 合并价格历史和小时特征
+                combined_input = np.concatenate([price_history_normalized, [hour_cos, hour_sin]])
+            else:
+                combined_input = price_history_normalized
+            
+            X_list.append(combined_input)
+            # 使用原始完整数据作为目标
+            y_list.append(train_target[end_idx:target_end])
         
         if len(X_list) < 10:
             print(f"  警告：训练样本不足")
@@ -295,9 +360,17 @@ class NeuralNetworkImputer(BaseImputer):
         X_train = np.array(X_list, dtype=np.float32)
         y_train = np.array(y_list, dtype=np.float32)
         
-        # 创建并训练模型（不使用标准化，保持原始数据尺度）
+        # 检查是否有NaN
+        if np.any(np.isnan(X_train)) or np.any(np.isnan(y_train)):
+            print(f"  警告：训练数据中存在NaN，进行清理...")
+            X_train = np.nan_to_num(X_train, nan=0.0)
+            y_train = np.nan_to_num(y_train, nan=0.0)
+        
+        print(f"  训练样本数: {len(X_train)}, 输入维度: {X_train.shape[1]}")
+        
+        # 创建并训练模型
         self.model = MLPModel(
-            input_dim=self.window_size,
+            input_dim=X_train.shape[1],
             output_dim=self.output_size,
             hidden_dims=self.hidden_dims,
             batch_size=self.batch_size,
@@ -309,11 +382,24 @@ class NeuralNetworkImputer(BaseImputer):
         self.model.fit(X_train, y_train)
         print(f"  神经网络模型训练完成 ({self.epochs}轮)")
     
-    def impute(self, data: np.ndarray) -> np.ndarray:
-        """使用神经网络填充缺失值（支持反标准化）"""
+    def impute(self, data: np.ndarray, hour_feature: np.ndarray = None) -> np.ndarray:
+        """
+        使用神经网络填充缺失值
+        
+        Parameters
+        ----------
+        data : np.ndarray
+            待填充数据
+        hour_feature : np.ndarray
+            小时特征（0-23），如果为None则使用fit时传入的特征
+        """
         if self.model is None:
             print("  警告：神经网络模型未训练，使用线性插值代替")
             return LinearInterpolationImputer().impute(data)
+        
+        # 使用传入的小时特征或fit时保存的特征
+        if hour_feature is None:
+            hour_feature = self.hour_feature
         
         filled = data.copy()
         missing_mask = np.isnan(data)
@@ -363,9 +449,22 @@ class NeuralNetworkImputer(BaseImputer):
                 input_window = pd.Series(input_window).interpolate(method='linear').values
                 input_window = np.nan_to_num(input_window, nan=0.0)
                 
+                # 对输入窗口进行标准化（使用训练时的统计信息）
+                input_window_normalized = (input_window - self.price_mean) / self.price_std
+                
+                # 添加小时特征（cos/sin循环编码）
+                if hour_feature is not None and current_pos < len(hour_feature):
+                    hour = float(hour_feature[current_pos]) % 24
+                    # 循环编码：cos和sin
+                    hour_cos = np.cos(2 * np.pi * hour / 24)
+                    hour_sin = np.sin(2 * np.pi * hour / 24)
+                    combined_input = np.concatenate([input_window_normalized, [hour_cos, hour_sin]])
+                else:
+                    combined_input = input_window_normalized
+                
                 # 预测
                 try:
-                    prediction = self.model.predict(input_window.reshape(1, -1))[0]
+                    prediction = self.model.predict(combined_input.reshape(1, -1))[0]
                     actual_length = min(predict_length, len(prediction))
                     filled[current_pos:current_pos + actual_length] = prediction[:actual_length]
                     current_pos += actual_length
@@ -385,52 +484,43 @@ class NeuralNetworkImputer(BaseImputer):
         return filled
 
 
-class MultiFeatureMLPImputer(BaseImputer):
-    """多特征MLP填充器（使用日前数据、时间特征等）"""
+
+
+
+class OptimizedMLPImputer(BaseImputer):
+    """超参数优化的MLP填充器（使用网格搜索），使用价格历史+小时特征"""
     
-    def __init__(self, feature_cols: List[str], window_size: int = 48, output_size: int = 24,
-                 hidden_dims: List[int] = None, epochs: int = 100, 
-                 batch_size: int = 64, lr: float = 0.001):
-        super().__init__("多特征MLP")
-        self.feature_cols = feature_cols
+    def __init__(self, window_size: int = 48, output_size: int = 24,
+                 epochs: int = 100, n_trials: int = 10):
+        super().__init__("优化MLP")
         self.window_size = window_size
         self.output_size = output_size
-        self.hidden_dims = hidden_dims if hidden_dims is not None else [256, 128, 64]
         self.epochs = epochs
-        self.batch_size = batch_size
-        self.lr = lr
+        self.n_trials = n_trials
         self.model = None
-        self.scaler = None
+        self.best_params = None
+        self.hour_feature = None
         
-    def fit(self, data: np.ndarray, missing_mask: np.ndarray, features_df: pd.DataFrame = None):
+    def fit(self, data: np.ndarray, missing_mask: np.ndarray, hour_feature: np.ndarray = None,
+            original_data: np.ndarray = None):
         """
-        训练多特征MLP模型
+        使用网格搜索优化MLP超参数
         
         Parameters
         ----------
         data : np.ndarray
-            目标价格数据
+            目标价格数据（包含缺失值，用于构建输入特征）
         missing_mask : np.ndarray
             缺失值掩码
-        features_df : pd.DataFrame
-            特征数据框
+        hour_feature : np.ndarray
+            小时特征（0-23）
+        original_data : np.ndarray, optional
+            原始完整数据（不包含缺失值，用于训练目标）
         """
-        if features_df is None or len(self.feature_cols) == 0:
-            print("  警告：没有提供特征数据，使用单变量MLP")
-            # 降级为单变量MLP
-            simple_imputer = NeuralNetworkImputer(
-                window_size=self.window_size,
-                output_size=self.output_size,
-                hidden_dims=self.hidden_dims,
-                epochs=self.epochs,
-                batch_size=self.batch_size,
-                lr=self.lr
-            )
-            simple_imputer.fit(data, missing_mask)
-            self.model = simple_imputer.model
-            return
+        print(f"\n  使用网格搜索优化MLP超参数 ({self.n_trials}次试验)...")
         
-        print(f"\n  训练多特征MLP模型 ({self.epochs}轮, 特征: {self.feature_cols})...")
+        # 保存小时特征
+        self.hour_feature = hour_feature
         
         # 添加项目根目录到路径
         project_root = os.path.join(os.path.dirname(__file__), '..')
@@ -443,90 +533,218 @@ class MultiFeatureMLPImputer(BaseImputer):
             print(f"  警告：无法导入 MLPModel：{e}")
             return
         
-        # 准备特征数据
-        feature_data = features_df[self.feature_cols].values.astype(float)
+        # 使用原始完整数据作为训练目标，如果没有则使用线性插值填充
+        if original_data is not None:
+            train_target = original_data
+            # 对于输入特征，使用线性插值填充缺失值
+            input_data = pd.Series(data).interpolate(method='linear').values
+            input_data = np.nan_to_num(input_data, nan=np.nanmean(input_data))
+        else:
+            # 如果没有提供原始数据，使用插值填充
+            train_target = pd.Series(data).interpolate(method='linear').values
+            train_target = np.nan_to_num(train_target, nan=np.nanmean(train_target))
+            input_data = train_target
         
-        # 标准化特征
-        from sklearn.preprocessing import StandardScaler
-        self.scaler = StandardScaler()
-        feature_data_scaled = self.scaler.fit_transform(feature_data)
+        # 计算价格特征的统计信息用于归一化
+        self.price_mean = np.mean(input_data)
+        self.price_std = np.std(input_data)
+        if self.price_std == 0:
+            self.price_std = 1.0
         
-        # 准备训练数据
         valid_indices = np.where(~missing_mask)[0]
         
-        if len(valid_indices) < self.window_size + self.output_size + 10:
-            print(f"  警告：有效数据不足")
+        if len(valid_indices) < self.window_size + self.output_size + 50:
+            print(f"  警告：有效数据不足，跳过优化")
             return
         
-        # 构建训练样本：价格历史 + 当前特征
+        # 构建训练样本：价格历史 + 小时特征
         X_list = []
         y_list = []
         
-        for i in range(len(valid_indices) - self.window_size - self.output_size):
+        for i in range(len(valid_indices) - self.window_size - self.output_size + 1):
             idx = valid_indices[i]
-            end_idx = valid_indices[i] + self.window_size
+            end_idx = idx + self.window_size
             
             # 检查窗口内是否连续且有效
             if end_idx >= len(data):
                 continue
             if np.any(missing_mask[idx:end_idx]):
                 continue
-                
-            # 价格历史
-            price_history = data[idx:end_idx]
-            # 当前时刻特征
-            current_features = feature_data_scaled[end_idx - 1]
             
-            # 合并输入
-            combined_input = np.concatenate([price_history, current_features])
+            # 检查目标区域是否有缺失值
+            target_end = end_idx + self.output_size
+            if target_end > len(data) or np.any(missing_mask[end_idx:target_end]):
+                continue
+            
+            # 价格历史（使用插值填充后的数据作为输入，并进行标准化）
+            price_history = input_data[idx:end_idx]
+            price_history_normalized = (price_history - self.price_mean) / self.price_std
+            
+            # 当前时刻小时特征（cos/sin循环编码）
+            if hour_feature is not None and end_idx < len(hour_feature):
+                hour = float(hour_feature[end_idx]) % 24
+                # 循环编码：cos和sin
+                hour_cos = np.cos(2 * np.pi * hour / 24)
+                hour_sin = np.sin(2 * np.pi * hour / 24)
+                # 合并价格历史和小时特征
+                combined_input = np.concatenate([price_history_normalized, [hour_cos, hour_sin]])
+            else:
+                combined_input = price_history_normalized
+            
             X_list.append(combined_input)
-            
-            # 预测目标
-            target_idx = end_idx
-            if target_idx + self.output_size <= len(data):
-                y_list.append(data[target_idx:target_idx + self.output_size])
+            y_list.append(train_target[end_idx:target_end])
         
-        if len(X_list) < 10:
-            print(f"  警告：训练样本不足 ({len(X_list)}个)")
+        if len(X_list) < 50:
+            print(f"  警告：训练样本不足")
             return
         
-        X_train = np.array(X_list, dtype=np.float32)
-        y_train = np.array(y_list, dtype=np.float32)
+        # 划分训练集和验证集
+        n_samples = len(X_list)
+        train_size = int(0.8 * n_samples)
         
-        print(f"  训练样本数: {len(X_train)}, 输入维度: {X_train.shape[1]}")
+        X_train = np.array(X_list[:train_size], dtype=np.float32)
+        y_train = np.array(y_list[:train_size], dtype=np.float32)
+        X_val = np.array(X_list[train_size:], dtype=np.float32)
+        y_val = np.array(y_list[train_size:], dtype=np.float32)
         
-        # 创建并训练模型
+        # 检查并清理NaN
+        if np.any(np.isnan(X_train)) or np.any(np.isnan(y_train)):
+            print(f"  警告：训练数据中存在NaN，进行清理...")
+            X_train = np.nan_to_num(X_train, nan=0.0)
+            y_train = np.nan_to_num(y_train, nan=0.0)
+            X_val = np.nan_to_num(X_val, nan=0.0)
+            y_val = np.nan_to_num(y_val, nan=0.0)
+        
+        input_dim = X_train.shape[1]
+        print(f"  训练样本数: {len(X_train)}, 验证样本数: {len(X_val)}, 输入维度: {input_dim}")
+        
+        # 定义超参数搜索空间
+        param_grid = {
+            'hidden_dims': [
+                [128, 64],
+                [256, 128],
+                [256, 128, 64],
+                [512, 256, 128],
+            ],
+            'lr': [0.001, 0.0005, 0.0001],
+            'batch_size': [32, 64, 128]
+        }
+        
+        # 生成所有参数组合
+        import itertools
+        all_params = []
+        for hidden_dims in param_grid['hidden_dims']:
+            for lr in param_grid['lr']:
+                for batch_size in param_grid['batch_size']:
+                    all_params.append({
+                        'hidden_dims': hidden_dims,
+                        'lr': lr,
+                        'batch_size': batch_size
+                    })
+        
+        # 随机选择n_trials个参数组合
+        np.random.seed(42)
+        if len(all_params) > self.n_trials:
+            selected_indices = np.random.choice(len(all_params), self.n_trials, replace=False)
+            trial_params = [all_params[i] for i in selected_indices]
+        else:
+            trial_params = all_params
+        
+        print(f"  测试 {len(trial_params)} 组超参数...")
+        
+        # 评估每个参数组合
+        best_rmse = float('inf')
+        best_params = None
+        
+        for i, params in enumerate(trial_params):
+            try:
+                # 创建模型
+                model = MLPModel(
+                    input_dim=input_dim,
+                    output_dim=self.output_size,
+                    hidden_dims=params['hidden_dims'],
+                    batch_size=params['batch_size'],
+                    epochs=self.epochs,
+                    lr=params['lr'],
+                    device='cuda',
+                    verbose=False
+                )
+                
+                # 训练模型
+                model.fit(X_train, y_train)
+                
+                # 验证
+                predictions = model.predict(X_val)
+                rmse = np.sqrt(mean_squared_error(y_val, predictions))
+                
+                print(f"    试验 {i+1}/{len(trial_params)}: hidden_dims={params['hidden_dims']}, "
+                      f"lr={params['lr']}, batch_size={params['batch_size']} -> RMSE={rmse:.4f}")
+                
+                if rmse < best_rmse:
+                    best_rmse = rmse
+                    best_params = params
+                    
+            except Exception as e:
+                print(f"    试验 {i+1}/{len(trial_params)} 失败: {str(e)}")
+                continue
+        
+        if best_params is None:
+            print("  警告：所有试验都失败，使用默认参数")
+            best_params = {
+                'hidden_dims': [256, 128, 64],
+                'lr': 0.001,
+                'batch_size': 64
+            }
+        
+        self.best_params = best_params
+        print(f"\n  最优超参数:")
+        print(f"    hidden_dims: {best_params['hidden_dims']}")
+        print(f"    lr: {best_params['lr']}")
+        print(f"    batch_size: {best_params['batch_size']}")
+        print(f"    验证集RMSE: {best_rmse:.4f}")
+        
+        # 使用最优参数训练最终模型（使用全部数据）
+        X_full = np.array(X_list, dtype=np.float32)
+        y_full = np.array(y_list, dtype=np.float32)
+        
         self.model = MLPModel(
-            input_dim=X_train.shape[1],
+            input_dim=input_dim,
             output_dim=self.output_size,
-            hidden_dims=self.hidden_dims,
-            batch_size=self.batch_size,
+            hidden_dims=best_params['hidden_dims'],
+            batch_size=best_params['batch_size'],
             epochs=self.epochs,
-            lr=self.lr,
-            device='cuda'
+            lr=best_params['lr'],
+            device='cuda',
+            verbose=False
         )
         
-        self.model.fit(X_train, y_train)
-        print(f"  多特征MLP模型训练完成 ({self.epochs}轮)")
+        self.model.fit(X_full, y_full)
+        print(f"  优化MLP模型训练完成 ({self.epochs}轮)")
     
-    def impute(self, data: np.ndarray, features_df: pd.DataFrame = None) -> np.ndarray:
-        """使用多特征MLP填充缺失值"""
+    def impute(self, data: np.ndarray, hour_feature: np.ndarray = None) -> np.ndarray:
+        """
+        使用优化后的MLP填充缺失值
+        
+        Parameters
+        ----------
+        data : np.ndarray
+            待填充数据
+        hour_feature : np.ndarray
+            小时特征（0-23），如果为None则使用fit时传入的特征
+        """
         if self.model is None:
-            print("  警告：模型未训练，使用线性插值代替")
+            print("  警告：优化MLP模型未训练，使用线性插值代替")
             return LinearInterpolationImputer().impute(data)
+        
+        # 使用传入的小时特征或fit时保存的特征
+        if hour_feature is None:
+            hour_feature = self.hour_feature
         
         filled = data.copy()
         missing_mask = np.isnan(data)
         
         if not np.any(missing_mask):
             return filled
-        
-        # 准备特征数据
-        if features_df is not None and self.scaler is not None:
-            feature_data = features_df[self.feature_cols].values.astype(float)
-            feature_data_scaled = self.scaler.transform(feature_data)
-        else:
-            feature_data_scaled = None
         
         # 找到所有缺失段
         gap_indices = np.where(missing_mask)[0]
@@ -550,397 +768,38 @@ class MultiFeatureMLPImputer(BaseImputer):
         for gap_group in gap_groups:
             chunk_start = gap_group[0]
             chunk_end = gap_group[-1] + 1
+            chunk_length = chunk_end - chunk_start
             
             # 使用滚动预测处理任意长度的缺失段
             current_pos = chunk_start
             while current_pos < chunk_end:
+                # 计算本次预测的长度
                 predict_length = min(self.output_size, chunk_end - current_pos)
                 
                 # 构建输入窗口
                 if current_pos >= self.window_size:
                     input_window = filled[current_pos - self.window_size:current_pos]
-                    if feature_data_scaled is not None and current_pos < len(feature_data_scaled):
-                        current_features = feature_data_scaled[current_pos]
-                    else:
-                        current_features = np.zeros(len(self.feature_cols))
                 else:
                     input_window = np.pad(filled[:current_pos], 
                                         (self.window_size - current_pos, 0), 
                                         mode='edge')
-                    if feature_data_scaled is not None and current_pos < len(feature_data_scaled):
-                        current_features = feature_data_scaled[current_pos]
-                    else:
-                        current_features = np.zeros(len(self.feature_cols))
                 
-                # 处理输入窗口中的 NaN
+                # 处理输入窗口中的 NaN（用线性插值临时填充）
                 input_window = pd.Series(input_window).interpolate(method='linear').values
                 input_window = np.nan_to_num(input_window, nan=0.0)
                 
-                # 合并价格历史和特征
-                combined_input = np.concatenate([input_window, current_features])
+                # 对输入窗口进行标准化（使用训练时的统计信息）
+                input_window_normalized = (input_window - self.price_mean) / self.price_std
                 
-                # 预测
-                try:
-                    prediction = self.model.predict(combined_input.reshape(1, -1))[0]
-                    actual_length = min(predict_length, len(prediction))
-                    filled[current_pos:current_pos + actual_length] = prediction[:actual_length]
-                    current_pos += actual_length
-                except Exception as e:
-                    print(f"    预测失败，使用插值：{str(e)}")
-                    filled[current_pos:chunk_end] = np.nanmean(filled)
-                    break
-        
-        # 确保没有 NaN
-        if np.any(np.isnan(filled)):
-            filled = pd.Series(filled).interpolate(method='linear').values
-            filled = np.nan_to_num(filled, nan=np.nanmean(filled))
-        
-        return filled
-
-
-class PSOMLPImputer(BaseImputer):
-    """PSO优化MLP填充器"""
-    
-    def __init__(self, available_features: List[str],
-                 n_particles: int = 15, max_iter: int = 30,
-                 window_size: int = 48, output_size: int = 24,
-                 epochs: int = 100):
-        super().__init__("PSO-MLP")
-        self.available_features = available_features
-        self.n_particles = n_particles
-        self.max_iter = max_iter
-        self.window_size = window_size
-        self.output_size = output_size
-        self.epochs = epochs
-        self.model = None
-        self.selected_features = None
-        self.best_hyperparams = None
-        self.scaler = None
-        
-    def fit(self, data: np.ndarray, missing_mask: np.ndarray, features_df: pd.DataFrame = None):
-        """
-        使用PSO优化特征选择和超参数
-        
-        Parameters
-        ----------
-        data : np.ndarray
-            目标价格数据
-        missing_mask : np.ndarray
-            缺失值掩码
-        features_df : pd.DataFrame
-            特征数据框
-        """
-        if features_df is None:
-            print("  警告：没有提供特征数据，使用默认MLP")
-            simple_imputer = NeuralNetworkImputer(
-                window_size=self.window_size,
-                output_size=self.output_size,
-                epochs=self.epochs
-            )
-            simple_imputer.fit(data, missing_mask)
-            self.model = simple_imputer.model
-            return
-        
-        # PSO参数：粒子数 = 特征数 + 超参数数 + 1
-        print(f"\n  使用PSO优化MLP (粒子数: {self.n_particles}, 迭代: {self.max_iter})...")
-        print(f"  可用特征: {self.available_features}")
-        
-        # 添加项目根目录到路径
-        project_root = os.path.join(os.path.dirname(__file__), '..')
-        if project_root not in sys.path:
-            sys.path.insert(0, project_root)
-        
-        try:
-            from models.pso_optimizer import PSOOptimizer
-            from models.neural_networks import MLPModel
-        except ImportError as e:
-            print(f"  警告：无法导入优化模块：{e}")
-            return
-        
-        # 准备数据
-        valid_indices = np.where(~missing_mask)[0]
-        n_features = len(self.available_features)
-        
-        # 构建3折交叉验证数据
-        fold_size = len(valid_indices) // 3
-        
-        X_folds = []
-        y_folds = []
-        
-        for fold in range(3):
-            start_idx = fold * fold_size
-            end_idx = (fold + 1) * fold_size if fold < 2 else len(valid_indices)
-            fold_indices = valid_indices[start_idx:end_idx]
-            
-            # 提取特征和目标
-            fold_features = features_df.iloc[fold_indices][self.available_features].values.astype(float)
-            fold_target = data[fold_indices]
-            
-            X_folds.append(fold_features)
-            y_folds.append(fold_target)
-        
-        # PSO适应度函数
-        def fitness_func(feature_selection, hyperparams):
-            selected_indices = [i for i, v in enumerate(feature_selection) if v > 0.5]
-            if len(selected_indices) == 0:
-                return float('inf')
-            
-            selected_feature_names = [self.available_features[i] for i in selected_indices]
-            
-            # 解析超参数
-            hidden_dim = int(np.clip(hyperparams[0], 32, 512))
-            lr = np.clip(hyperparams[1], 1e-5, 0.01)
-            batch_size = int(np.clip(hyperparams[2], 16, 128))
-            
-            # 3折交叉验证
-            cv_rmse_list = []
-            
-            for val_fold in range(3):
-                train_folds = [i for i in range(3) if i != val_fold]
-                
-                # 合并训练数据
-                X_train = np.vstack([X_folds[i][:, selected_indices] for i in train_folds])
-                y_train = np.concatenate([y_folds[i] for i in train_folds])
-                X_val = X_folds[val_fold][:, selected_indices]
-                y_val = y_folds[val_fold]
-                
-                if len(X_train) < self.window_size + 10 or len(X_val) < self.window_size:
-                    continue
-                
-                try:
-                    # 标准化
-                    from sklearn.preprocessing import StandardScaler
-                    scaler = StandardScaler()
-                    X_train_scaled = scaler.fit_transform(X_train)
-                    X_val_scaled = scaler.transform(X_val)
-                    
-                    # 构建序列数据
-                    X_seq, y_seq = [], []
-                    for i in range(len(X_train_scaled) - self.window_size):
-                        # 价格历史 + 特征
-                        price_hist = y_train[i:i+self.window_size]
-                        features = X_train_scaled[i+self.window_size-1]
-                        X_seq.append(np.concatenate([price_hist, features]))
-                        y_seq.append(y_train[i+self.window_size])
-                    
-                    if len(X_seq) < 10:
-                        continue
-                    
-                    X_seq = np.array(X_seq, dtype=np.float32)
-                    y_seq = np.array(y_seq, dtype=np.float32).reshape(-1, 1)
-                    
-                    # PSO评估时训练
-                    model = MLPModel(
-                        input_dim=X_seq.shape[1],
-                        output_dim=1,
-                        hidden_dims=[hidden_dim, hidden_dim//2],
-                        batch_size=batch_size,
-                        epochs=self.epochs,
-                        lr=lr,
-                        device='cuda',
-                        verbose=False
-                    )
-                    
-                    model.fit(X_seq, y_seq)
-                    
-                    # 验证
-                    X_val_seq, y_val_seq = [], []
-                    for i in range(len(X_val_scaled) - self.window_size):
-                        price_hist = y_val[i:i+self.window_size]
-                        features = X_val_scaled[i+self.window_size-1]
-                        X_val_seq.append(np.concatenate([price_hist, features]))
-                        y_val_seq.append(y_val[i+self.window_size])
-                    
-                    if len(X_val_seq) == 0:
-                        continue
-                    
-                    X_val_seq = np.array(X_val_seq, dtype=np.float32)
-                    y_val_seq = np.array(y_val_seq, dtype=np.float32)
-                    
-                    predictions = model.predict(X_val_seq).flatten()
-                    rmse = np.sqrt(mean_squared_error(y_val_seq, predictions))
-                    cv_rmse_list.append(rmse)
-                    
-                except Exception as e:
-                    continue
-            
-            if len(cv_rmse_list) == 0:
-                return float('inf')
-            
-            avg_rmse = np.mean(cv_rmse_list)
-            # 添加特征选择惩罚
-            penalty = 0.0001 * len(selected_indices)
-            return avg_rmse + penalty
-        
-        # 运行PSO优化
-        # 超参数：hidden_dim, lr, batch_size
-        hyperparam_bounds = [(32, 512), (1e-4, 0.01), (16, 128)]
-        
-        pso = PSOOptimizer(
-            n_features=len(self.available_features),
-            n_hyperparams=3,
-            n_particles=self.n_particles,
-            max_iter=self.max_iter,
-            hyperparam_bounds=hyperparam_bounds,
-            w=0.5, c1=1.5, c2=1.5,
-            verbose=True
-        )
-        
-        best_features, best_hyperparams, best_fitness = pso.optimize(fitness_func)
-        
-        # 保存最优解
-        self.selected_features = [self.available_features[i] for i, v in enumerate(best_features) if v > 0.5]
-        self.best_hyperparams = {
-            'hidden_dim': int(np.clip(best_hyperparams[0], 32, 512)),
-            'lr': np.clip(best_hyperparams[1], 1e-5, 0.01),
-            'batch_size': int(np.clip(best_hyperparams[2], 16, 128))
-        }
-        
-        print(f"\n  PSO优化完成！")
-        print(f"  选中特征: {self.selected_features}")
-        print(f"  最优超参数: {self.best_hyperparams}")
-        print(f"  最佳适应度: {best_fitness:.6f}")
-        
-        # 使用最优特征和超参数训练最终模型
-        self._train_final_model(data, missing_mask, features_df)
-    
-    def _train_final_model(self, data: np.ndarray, missing_mask: np.ndarray, features_df: pd.DataFrame):
-        """使用最优参数训练最终模型"""
-        from sklearn.preprocessing import StandardScaler
-        
-        # 准备特征数据
-        feature_data = features_df[self.selected_features].values.astype(float)
-        self.scaler = StandardScaler()
-        feature_data_scaled = self.scaler.fit_transform(feature_data)
-        
-        # 准备训练数据
-        valid_indices = np.where(~missing_mask)[0]
-        
-        X_list = []
-        y_list = []
-        
-        for i in range(len(valid_indices) - self.window_size - self.output_size):
-            idx = valid_indices[i]
-            end_idx = valid_indices[i] + self.window_size
-            
-            if end_idx >= len(data) or np.any(missing_mask[idx:end_idx]):
-                continue
-            
-            # 价格历史 + 特征
-            price_history = data[idx:end_idx]
-            current_features = feature_data_scaled[end_idx - 1]
-            combined_input = np.concatenate([price_history, current_features])
-            
-            X_list.append(combined_input)
-            y_list.append(data[end_idx:end_idx + self.output_size])
-        
-        if len(X_list) < 10:
-            print("  警告：训练样本不足")
-            return
-        
-        X_train = np.array(X_list, dtype=np.float32)
-        y_train = np.array(y_list, dtype=np.float32)
-        
-        print(f"  最终模型训练样本: {len(X_train)}")
-        
-        # 导入MLP模型
-        from models.neural_networks import MLPModel
-        
-        # 创建并训练最终模型（PSO优化过程中不显示详细输出）
-        self.model = MLPModel(
-            input_dim=X_train.shape[1],
-            output_dim=self.output_size,
-            hidden_dims=[self.best_hyperparams['hidden_dim'], self.best_hyperparams['hidden_dim']//2],
-            batch_size=self.best_hyperparams['batch_size'],
-            epochs=self.epochs,
-            lr=self.best_hyperparams['lr'],
-            device='cuda',
-            verbose=False
-        )
-
-        self.model.fit(X_train, y_train)
-        print(f"  PSO-MLP最终模型训练完成 ({self.epochs}轮)")
-    
-    def impute(self, data: np.ndarray, features_df: pd.DataFrame = None) -> np.ndarray:
-        """使用PSO-MLP填充缺失值"""
-        if self.model is None:
-            print("  警告：PSO-MLP模型未训练，使用线性插值代替")
-            return LinearInterpolationImputer().impute(data)
-        
-        filled = data.copy()
-        missing_mask = np.isnan(data)
-        
-        if not np.any(missing_mask):
-            return filled
-        
-        # 准备特征数据
-        if features_df is not None and self.scaler is not None and self.selected_features:
-            feature_data = features_df[self.selected_features].values.astype(float)
-            feature_data_scaled = self.scaler.transform(feature_data)
-        else:
-            feature_data_scaled = None
-            if features_df is None:
-                print("  警告：features_df为None")
-            if self.scaler is None:
-                print("  警告：scaler为None")
-            if not self.selected_features:
-                print("  警告：selected_features为空")
-        
-        # 找到所有缺失段
-        gap_indices = np.where(missing_mask)[0]
-        if len(gap_indices) == 0:
-            return filled
-        
-        # 将缺失段分组
-        gap_groups = []
-        current_group = [gap_indices[0]]
-        
-        for i in range(1, len(gap_indices)):
-            if gap_indices[i] == gap_indices[i-1] + 1:
-                current_group.append(gap_indices[i])
-            else:
-                gap_groups.append(current_group)
-                current_group = [gap_indices[i]]
-        
-        gap_groups.append(current_group)
-        
-        # 对每个缺失段进行填充
-        for gap_group in gap_groups:
-            chunk_start = gap_group[0]
-            chunk_end = gap_group[-1] + 1
-            
-            current_pos = chunk_start
-            while current_pos < chunk_end:
-                predict_length = min(self.output_size, chunk_end - current_pos)
-                
-                # 构建输入窗口
-                if current_pos >= self.window_size:
-                    input_window = filled[current_pos - self.window_size:current_pos]
-                    if feature_data_scaled is not None and current_pos < len(feature_data_scaled):
-                        current_features = feature_data_scaled[current_pos]
-                    elif feature_data_scaled is not None and len(feature_data_scaled) > 0:
-                        # 如果超出范围，使用最后一个特征值
-                        current_features = feature_data_scaled[-1]
-                    else:
-                        current_features = np.zeros(len(self.selected_features) if self.selected_features else 0)
+                # 添加小时特征（cos/sin循环编码）
+                if hour_feature is not None and current_pos < len(hour_feature):
+                    hour = float(hour_feature[current_pos]) % 24
+                    # 循环编码：cos和sin
+                    hour_cos = np.cos(2 * np.pi * hour / 24)
+                    hour_sin = np.sin(2 * np.pi * hour / 24)
+                    combined_input = np.concatenate([input_window_normalized, [hour_cos, hour_sin]])
                 else:
-                    input_window = np.pad(filled[:current_pos],
-                                        (self.window_size - current_pos, 0),
-                                        mode='edge')
-                    if feature_data_scaled is not None and current_pos < len(feature_data_scaled):
-                        current_features = feature_data_scaled[current_pos]
-                    elif feature_data_scaled is not None and len(feature_data_scaled) > 0:
-                        # 如果超出范围，使用最后一个特征值
-                        current_features = feature_data_scaled[-1]
-                    else:
-                        current_features = np.zeros(len(self.selected_features) if self.selected_features else 0)
-                
-                # 处理输入窗口中的 NaN
-                input_window = pd.Series(input_window).interpolate(method='linear').values
-                input_window = np.nan_to_num(input_window, nan=0.0)
-                
-                # 合并价格历史和特征
-                combined_input = np.concatenate([input_window, current_features])
+                    combined_input = input_window_normalized
                 
                 # 预测
                 try:
@@ -950,11 +809,14 @@ class PSOMLPImputer(BaseImputer):
                     current_pos += actual_length
                 except Exception as e:
                     print(f"    预测失败，使用插值：{str(e)}")
+                    # 预测失败时使用插值
                     filled[current_pos:chunk_end] = np.nanmean(filled)
                     break
         
         # 确保没有 NaN
         if np.any(np.isnan(filled)):
+            nan_indices = np.where(np.isnan(filled))[0]
+            print(f"  警告：填充后仍有 {len(nan_indices)} 个 NaN 值，使用均值填充")
             filled = pd.Series(filled).interpolate(method='linear').values
             filled = np.nan_to_num(filled, nan=np.nanmean(filled))
         
@@ -1194,21 +1056,139 @@ def plot_comparison(original_data: np.ndarray, data_with_missing: np.ndarray,
     plot_imputation_comparison(original_data, data_with_missing, missing_mask, results, target_col)
 
 
+def plot_three_methods_comparison(test_data: np.ndarray, test_missing_mask: np.ndarray,
+                                  results: Dict, target_col: str = "电价"):
+    """
+    绘制三张子图对比：线性插值、MLP、优化MLP
+    每张子图显示实际值和填充值
+    """
+    # 选择测试集中第一个缺失区域进行展示
+    missing_indices = np.where(test_missing_mask)[0]
+    
+    if len(missing_indices) == 0:
+        print("测试集中没有缺失值，无法绘制对比图")
+        return
+    
+    # 找到第一个缺失区域
+    gap_start = missing_indices[0]
+    gap_end = missing_indices[0]
+    for i in range(1, len(missing_indices)):
+        if missing_indices[i] == missing_indices[i-1] + 1:
+            gap_end = missing_indices[i]
+        else:
+            break
+    
+    # 扩展显示范围（前后各48小时）
+    display_start = max(0, gap_start - 48)
+    display_end = min(len(test_data), gap_end + 48 + 1)
+    
+    # 创建图形
+    fig, axes = plt.subplots(3, 1, figsize=(16, 12))
+    
+    methods = ['线性插值', 'MLP', '优化MLP']
+    colors = {'实际值': 'black', '填充值': 'red'}
+    
+    for idx, method in enumerate(methods):
+        ax = axes[idx]
+        
+        # 绘制实际值
+        ax.plot(range(display_start, display_end), 
+                test_data[display_start:display_end],
+                label='实际值', color=colors['实际值'], linewidth=2, alpha=0.8)
+        
+        # 绘制填充值
+        if method in results:
+            filled_data = results[method]['filled_data']
+            ax.plot(range(display_start, display_end),
+                   filled_data[display_start:display_end],
+                   label='填充值', color=colors['填充值'], linewidth=2, alpha=0.8, linestyle='--')
+        
+        # 标记缺失区域
+        ax.axvspan(gap_start, gap_end + 1, alpha=0.2, color='blue', label='缺失区域')
+        
+        # 计算该区域的RMSE
+        if method in results:
+            region_mask = np.zeros_like(test_missing_mask, dtype=bool)
+            region_mask[gap_start:gap_end+1] = True
+            region_rmse = calculate_rmse(test_data, results[method]['filled_data'], region_mask)
+            title = f'{method} (区域RMSE: {region_rmse:.2f})'
+        else:
+            title = method
+        
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.legend(loc='best', fontsize=11)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylabel(target_col, fontsize=12)
+        
+        # 只在最后一个子图显示x轴标签
+        if idx == 2:
+            ax.set_xlabel('时间点', fontsize=12)
+    
+    plt.suptitle('三种填充方法效果对比（测试集）', fontsize=16, fontweight='bold', y=0.995)
+    plt.tight_layout()
+    
+    # 保存图片
+    save_path = os.path.join(os.path.dirname(__file__), 'eda3_three_methods_comparison.png')
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"\n三种方法对比图已保存：{save_path}")
+    
+    plt.show()
+
+
 # ============================================================================
-# 第五部分：主测试流程
+# 第五部分：主测试流程（严格划分训练/验证/测试集）
 # ============================================================================
+
+def split_train_val_test(data: np.ndarray, hour_feature: np.ndarray, 
+                         train_ratio=0.6, val_ratio=0.2):
+    """
+    严格按时间顺序划分训练/验证/测试集
+    
+    Returns
+    -------
+    train_data, val_data, test_data : 划分后的数据和索引
+    """
+    n = len(data)
+    train_end = int(n * train_ratio)
+    val_end = int(n * (train_ratio + val_ratio))
+    
+    train_data = data[:train_end]
+    train_hour = hour_feature[:train_end]
+    train_indices = np.arange(0, train_end)
+    
+    val_data = data[train_end:val_end]
+    val_hour = hour_feature[train_end:val_end]
+    val_indices = np.arange(train_end, val_end)
+    
+    test_data = data[val_end:]
+    test_hour = hour_feature[val_end:]
+    test_indices = np.arange(val_end, n)
+    
+    print(f"  数据集划分:")
+    print(f"    训练集: {len(train_data)} 样本 (索引 0-{train_end-1})")
+    print(f"    验证集: {len(val_data)} 样本 (索引 {train_end}-{val_end-1})")
+    print(f"    测试集: {len(test_data)} 样本 (索引 {val_end}-{n-1})")
+    
+    return (train_data, train_hour, train_indices), (val_data, val_hour, val_indices), (test_data, test_hour, test_indices)
+
 
 def run_test(data_path: str = None, target_col: str = "平均出清价格 - 日前（元/MWh）",
              missing_rate: float = 0.2):
     """
-    运行完整的测试流程，对比三种方法：
+    运行完整的测试流程，严格划分训练/验证/测试集：
+    1. 训练集：训练模型参数
+    2. 验证集：选择超参数（仅优化MLP使用）
+    3. 测试集：评估最终性能（所有方法使用）
+    
+    对比三种方法：
     1. 线性插值（基线）
     2. MLP（单变量神经网络）
-    3. PSO-MLP（PSO优化特征选择和超参数的多特征MLP）
+    3. 优化MLP（网格搜索超参数的MLP）
     """
     print("\n" + "=" * 80)
     print(" " * 20 + "缺失值填充方法性能对比测试")
     print("=" * 80)
+    print("\n【严格划分】训练集(60%) -> 验证集(20%) -> 测试集(20%)")
     
     # 1. 加载数据
     print("\n" + "=" * 60)
@@ -1239,71 +1219,44 @@ def run_test(data_path: str = None, target_col: str = "平均出清价格 - 日�
     df_segment = df_reset.iloc[time_slice].copy()
     original_data = df_segment[target_col].values.astype(float)
     
-    # 4. 准备特征（日前数据、小时、是否周末）
+    # 4. 提取小时特征
     print("\n" + "=" * 60)
     print("特征工程")
     print("=" * 60)
     
-    # 定义候选特征：日前数据 + 小时 + 是否周末
-    candidate_features = []
-
-    # 时间特征：只选用小时和是否周末
-    time_features = ['小时', '是否周末']
-    for feat in time_features:
-        if feat in df_segment.columns:
-            candidate_features.append(feat)
-
-    # 日前数据特征（系统负荷、非市场化机组出力）
-    day_ahead_features = ['系统负荷-日前', '非市场化机组出力-日前']
-    for feat in day_ahead_features:
-        if feat in df_segment.columns:
-            candidate_features.append(feat)
-
-    # 新能源出力特征（风电、光伏、水电）
-    new_energy_features = ['风电出力-日前', '光伏出力-日前', '水电出力-日前']
-    for feat in new_energy_features:
-        if feat in df_segment.columns:
-            candidate_features.append(feat)
+    # 从数据中提取小时特征
+    if '小时' in df_segment.columns:
+        hour_feature = df_segment['小时'].values
+    elif hasattr(df_segment.index, 'hour'):
+        hour_feature = df_segment.index.hour.values
+    elif 'datetime' in df_segment.columns:
+        hour_feature = pd.to_datetime(df_segment['datetime']).dt.hour.values
+    elif '时间戳' in df_segment.columns:
+        hour_feature = pd.to_datetime(df_segment['时间戳'].str.split('_').str[0]).dt.hour.values
+    else:
+        hour_feature = np.arange(len(df_segment)) % 24
+        print("  警告：未找到时间列，使用循环小时特征（0-23）")
     
-    print(f"候选特征：{candidate_features}")
+    print(f"  小时特征范围: {hour_feature.min()}-{hour_feature.max()}")
     
-    # 处理特征缺失值（使用线性插值填充）
-    for feat in candidate_features:
-        if feat in df_segment.columns:
-            if df_segment[feat].isnull().any():
-                n_missing = df_segment[feat].isnull().sum()
-                print(f"  特征 '{feat}' 有 {n_missing} 个缺失值，使用线性插值填充")
-                df_segment[feat] = df_segment[feat].interpolate(method='linear')
-                # 如果还有缺失值（如开头或结尾），使用前向/后向填充
-                df_segment[feat] = df_segment[feat].ffill().bfill()
-    
-    # 5. 生成缺失值
+    # 5. 严格划分训练/验证/测试集
     print("\n" + "=" * 60)
-    print("生成缺失值")
+    print("数据集划分（按时间顺序）")
+    print("=" * 60)
+    (train_data, train_hour, train_indices), (val_data, val_hour, val_indices), (test_data, test_hour, test_indices) = \
+        split_train_val_test(original_data, hour_feature, train_ratio=0.6, val_ratio=0.2)
+    
+    # 6. 在训练集上生成缺失值并训练模型
+    print("\n" + "=" * 60)
+    print("训练阶段：在训练集上生成缺失值并训练模型")
     print("=" * 60)
     np.random.seed(42)
-    data_with_missing, missing_mask, gap_starts, gap_ends = generate_missing_values(
-        original_data, missing_rate=missing_rate, min_gap=24, max_gap=48
+    train_data_missing, train_missing_mask, _, _ = generate_missing_values(
+        train_data, missing_rate=missing_rate, min_gap=24, max_gap=48
     )
     
-    # 6. 创建并评估填充器
-    results = {}
-    
-    # 6.1 线性插值（基线）
-    print("\n" + "=" * 60)
-    print("1. 线性插值（基线）")
-    print("=" * 60)
-    linear_imputer = LinearInterpolationImputer()
-    linear_imputer.fit(data_with_missing, missing_mask)
-    linear_filled = linear_imputer.impute(data_with_missing)
-    linear_rmse = calculate_rmse(original_data, linear_filled, missing_mask)
-    results['线性插值'] = {'rmse': linear_rmse, 'filled_data': linear_filled}
-    print(f"  RMSE: {linear_rmse:.4f}")
-    
-    # 6.2 MLP（单变量）
-    print("\n" + "=" * 60)
-    print("2. MLP（单变量神经网络）")
-    print("=" * 60)
+    # 6.1 在训练集上训练MLP
+    print("\n  训练MLP模型...")
     mlp_imputer = NeuralNetworkImputer(
         window_size=48,
         output_size=24,
@@ -1312,36 +1265,71 @@ def run_test(data_path: str = None, target_col: str = "平均出清价格 - 日�
         batch_size=64,
         lr=0.001
     )
-    mlp_imputer.fit(data_with_missing, missing_mask)
-    mlp_filled = mlp_imputer.impute(data_with_missing)
-    mlp_rmse = calculate_rmse(original_data, mlp_filled, missing_mask)
-    results['MLP'] = {'rmse': mlp_rmse, 'filled_data': mlp_filled}
-    print(f"  RMSE: {mlp_rmse:.4f}")
+    mlp_imputer.fit(train_data_missing, train_missing_mask, train_hour, train_data)
     
-    # 6.3 PSO-MLP（PSO优化特征选择和超参数）
-    print("\n" + "=" * 60)
-    print("3. PSO-MLP（PSO优化特征选择和超参数）")
-    print("=" * 60)
-    pso_mlp_imputer = PSOMLPImputer(
-        available_features=candidate_features,
-        n_particles=15,
-        max_iter=50,
+    # 6.2 在训练集+验证集上训练优化MLP（使用验证集选择超参数）
+    print("\n  训练优化MLP模型（使用验证集选择超参数）...")
+    # 合并训练集和验证集用于超参数搜索
+    train_val_data = np.concatenate([train_data, val_data])
+    train_val_hour = np.concatenate([train_hour, val_hour])
+    train_val_missing, train_val_mask, _, _ = generate_missing_values(
+        train_val_data, missing_rate=missing_rate, min_gap=24, max_gap=48
+    )
+    
+    opt_mlp_imputer = OptimizedMLPImputer(
         window_size=48,
         output_size=24,
-        epochs=100
+        epochs=100,
+        n_trials=36  # 减少试验次数以加快训练
     )
-    pso_mlp_imputer.fit(data_with_missing, missing_mask, df_segment)
-    pso_mlp_filled = pso_mlp_imputer.impute(data_with_missing, df_segment)
-    pso_mlp_rmse = calculate_rmse(original_data, pso_mlp_filled, missing_mask)
-    results['PSO-MLP'] = {'rmse': pso_mlp_rmse, 'filled_data': pso_mlp_filled}
-    print(f"  RMSE: {pso_mlp_rmse:.4f}")
+    opt_mlp_imputer.fit(train_val_data, train_val_mask, train_val_hour, train_val_data)
     
-    # 保存PSO优化结果信息
-    if pso_mlp_imputer.selected_features is not None:
-        results['PSO-MLP']['selected_features'] = pso_mlp_imputer.selected_features
-        results['PSO-MLP']['hyperparams'] = pso_mlp_imputer.best_hyperparams
+    # 7. 在测试集上评估所有方法
+    print("\n" + "=" * 60)
+    print("测试阶段：在测试集上评估所有方法")
+    print("=" * 60)
+    np.random.seed(123)  # 使用不同的随机种子
+    test_data_missing, test_missing_mask, _, _ = generate_missing_values(
+        test_data, missing_rate=missing_rate, min_gap=24, max_gap=48
+    )
     
-    # 7. 打印最终结果
+    results = {}
+    
+    # 7.1 线性插值（基线）
+    print("\n" + "=" * 60)
+    print("1. 线性插值（基线）")
+    print("=" * 60)
+    linear_imputer = LinearInterpolationImputer()
+    linear_imputer.fit(test_data_missing, test_missing_mask)
+    linear_filled = linear_imputer.impute(test_data_missing)
+    linear_rmse = calculate_rmse(test_data, linear_filled, test_missing_mask)
+    results['线性插值'] = {'rmse': linear_rmse, 'filled_data': linear_filled}
+    print(f"  测试集RMSE: {linear_rmse:.4f}")
+    
+    # 7.2 MLP
+    print("\n" + "=" * 60)
+    print("2. MLP（价格历史+小时特征）")
+    print("=" * 60)
+    mlp_filled = mlp_imputer.impute(test_data_missing, test_hour)
+    mlp_rmse = calculate_rmse(test_data, mlp_filled, test_missing_mask)
+    results['MLP'] = {'rmse': mlp_rmse, 'filled_data': mlp_filled}
+    print(f"  测试集RMSE: {mlp_rmse:.4f}")
+    
+    # 7.3 优化MLP
+    print("\n" + "=" * 60)
+    print("3. 优化MLP（网格搜索超参数）")
+    print("=" * 60)
+    opt_mlp_filled = opt_mlp_imputer.impute(test_data_missing, test_hour)
+    opt_mlp_rmse = calculate_rmse(test_data, opt_mlp_filled, test_missing_mask)
+    results['优化MLP'] = {'rmse': opt_mlp_rmse, 'filled_data': opt_mlp_filled}
+    print(f"  测试集RMSE: {opt_mlp_rmse:.4f}")
+    
+    # 保存优化结果信息
+    if opt_mlp_imputer.best_params is not None:
+        results['优化MLP']['best_params'] = opt_mlp_imputer.best_params
+        print(f"  最优超参数: {opt_mlp_imputer.best_params}")
+    
+    # 6. 打印最终结果
     print("\n" + "=" * 80)
     print(" " * 30 + "最终评估结果")
     print("=" * 80)
@@ -1359,344 +1347,25 @@ def run_test(data_path: str = None, target_col: str = "平均出清价格 - 日�
         improvement = (baseline_rmse - rmse) / baseline_rmse * 100
         print(f"{name:<30} {rmse:>12.4f} {improvement:>11.2f}%")
     
-    # 打印PSO优化详情
-    if 'PSO-MLP' in results and 'selected_features' in results['PSO-MLP']:
+    # 打印优化详情
+    if '优化MLP' in results and 'best_params' in results['优化MLP']:
         print("\n" + "=" * 80)
-        print("PSO-MLP 优化详情")
+        print("优化MLP 超参数详情")
         print("=" * 80)
-        print(f"选中特征: {results['PSO-MLP']['selected_features']}")
-        print(f"最优超参数:")
-        for param, value in results['PSO-MLP']['hyperparams'].items():
+        for param, value in results['优化MLP']['best_params'].items():
             print(f"  {param}: {value}")
+    
+    # 8. 绘制三种方法对比图
+    print("\n" + "=" * 80)
+    print("生成可视化对比图")
+    print("=" * 80)
+    plot_three_methods_comparison(test_data, test_missing_mask, results, target_col)
     
     print("\n" + "=" * 80)
     print("测试完成！")
     print("=" * 80)
     
     return results
-
-
-def run_test_with_features(data_path: str = None, 
-                           target_col: str = "平均出清价格-日前（元/MWh）",
-                           missing_rate: float = 0.2):
-    """
-    运行带特征工程的增强版测试流程
-    使用多特征（价格、负荷、新能源出力、时间特征）进行填充
-    """
-    print("\n" + "=" * 80)
-    print(" " * 20 + "特征工程增强版缺失值填充测试")
-    print("=" * 80)
-    
-    # 1. 加载数据
-    print("\n" + "=" * 60)
-    print("数据加载与特征工程")
-    print("=" * 60)
-    df = load_processed_data(data_path)
-    print(f"数据形状：{df.shape}")
-    print(f"时间范围：{df.index[0]} 到 {df.index[-1]}")
-    
-    # 2. 提取特征列
-    df_reset = df.reset_index()
-    
-    # 查找价格列
-    price_cols = [col for col in df_reset.columns if '日前' in col and '价格' in col]
-    if len(price_cols) == 0:
-        print(f"错误：未找到日前价格列")
-        print(f"可用列：{df_reset.columns.tolist()}")
-        return
-    
-    target_col = price_cols[0]
-    print(f"\n目标列：{target_col}")
-    
-    # 3. 找到最长连续段
-    segment, time_slice = find_longest_continuous_segment(df)
-    df_segment = df_reset.iloc[time_slice].copy()
-    
-    # 4. 特征工程 - 创建特征矩阵
-    print("\n构建特征矩阵...")
-    
-    # 基础时间特征
-    feature_cols = ['小时', '星期', '月', '是否周末', '是否高峰时段', '是否夜间', '季度']
-    
-    # 电力相关特征
-    power_cols = ['系统负荷-日前', '非市场化机组出力-日前', '新能源出力-日前']
-    
-    # 检查哪些列存在
-    available_features = []
-    for col in feature_cols + power_cols:
-        if col in df_segment.columns:
-            available_features.append(col)
-    
-    print(f"使用特征：{available_features}")
-    
-    # 构建特征矩阵
-    X_features = df_segment[available_features].values.astype(float)
-    y_target = df_segment[target_col].values.astype(float)
-    
-    # 添加滞后特征（过去24小时的价格）
-    print("添加滞后特征（过去24小时价格）...")
-    lag_features = []
-    for lag in [1, 2, 3, 6, 12, 24]:
-        lag_col = f'price_lag_{lag}'
-        df_segment[lag_col] = df_segment[target_col].shift(lag)
-        lag_features.append(lag_col)
-    
-    # 添加滑动窗口统计特征
-    print("添加滑动窗口统计特征...")
-    df_segment['price_ma_6'] = df_segment[target_col].rolling(window=6, min_periods=1).mean()
-    df_segment['price_ma_12'] = df_segment[target_col].rolling(window=12, min_periods=1).mean()
-    df_segment['price_ma_24'] = df_segment[target_col].rolling(window=24, min_periods=1).mean()
-    df_segment['price_std_24'] = df_segment[target_col].rolling(window=24, min_periods=1).std().fillna(0)
-    
-    stat_features = ['price_ma_6', 'price_ma_12', 'price_ma_24', 'price_std_24']
-    
-    # 合并所有特征
-    all_feature_cols = available_features + lag_features + stat_features
-    X_full = df_segment[all_feature_cols].fillna(0).values.astype(float)
-    
-    # 特征标准化 - 关键！防止NaN
-    from sklearn.preprocessing import StandardScaler
-    scaler = StandardScaler()
-    X_full = scaler.fit_transform(X_full)
-    
-    print(f"特征矩阵形状：{X_full.shape}")
-    print(f"特征列表：{all_feature_cols}")
-    print(f"特征标准化完成（均值≈0，标准差≈1）")
-    
-    # 5. 生成缺失值（只在目标列上生成）
-    print("\n" + "=" * 60)
-    print("生成缺失值")
-    print("=" * 60)
-    np.random.seed(42)
-    original_data = y_target.copy()
-    data_with_missing, missing_mask, gap_starts, gap_ends = generate_missing_values(
-        original_data, missing_rate=missing_rate, min_gap=24, max_gap=48
-    )
-    
-    # 6. 使用带特征的MLP进行填充
-    print("\n" + "=" * 60)
-    print("使用特征增强MLP进行填充")
-    print("=" * 60)
-    
-    filled_data = feature_enhanced_mlp_impute(
-        data_with_missing, missing_mask, X_full,
-        window_size=48, output_size=24,
-        hidden_dims=[256, 128, 64, 32],
-        epochs=100, batch_size=64, lr=0.001
-    )
-    
-    # 7. 评估
-    print("\n" + "=" * 60)
-    print("评估结果")
-    print("=" * 60)
-    
-    # 只在缺失位置计算误差
-    missing_indices = np.where(missing_mask)[0]
-    if len(missing_indices) > 0:
-        y_true = original_data[missing_indices]
-        y_pred = filled_data[missing_indices]
-        
-        rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-        mae = np.mean(np.abs(y_true - y_pred))
-        smape = np.mean(2 * np.abs(y_true - y_pred) / (np.abs(y_true) + np.abs(y_pred) + 1e-8)) * 100
-        
-        print(f"\n特征增强MLP填充结果：")
-        print(f"  RMSE: {rmse:.4f}")
-        print(f"  MAE: {mae:.4f}")
-        print(f"  sMAPE: {smape:.2f}%")
-        
-        # 与线性插值对比
-        linear_filled = LinearInterpolationImputer().impute(data_with_missing)
-        linear_rmse = np.sqrt(mean_squared_error(original_data[missing_indices], 
-                                                  linear_filled[missing_indices]))
-        
-        print(f"\n线性插值对比：")
-        print(f"  线性插值 RMSE: {linear_rmse:.4f}")
-        print(f"  改进幅度: {(linear_rmse - rmse) / linear_rmse * 100:.2f}%")
-    
-    return filled_data
-
-
-def feature_enhanced_mlp_impute(data: np.ndarray, missing_mask: np.ndarray, 
-                                features: np.ndarray,
-                                window_size: int = 48, output_size: int = 24,
-                                hidden_dims: List[int] = [256, 128, 64, 32],
-                                epochs: int = 100, batch_size: int = 64,
-                                lr: float = 0.001) -> np.ndarray:
-    """
-    使用特征增强的MLP进行缺失值填充
-    """
-    import sys
-    import os
-    project_root = os.path.join(os.path.dirname(__file__), '..')
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
-    
-    try:
-        from models.neural_networks import MLPModel
-    except ImportError as e:
-        print(f"警告：无法导入 MLPModel：{e}")
-        return LinearInterpolationImputer().impute(data)
-    
-    filled = data.copy()
-    valid_data = data[~missing_mask]
-    
-    if len(valid_data) < window_size + output_size:
-        print("警告：有效数据不足，使用线性插值")
-        return LinearInterpolationImputer().impute(data)
-    
-    # 构建训练样本（包含特征）
-    X_list = []
-    y_list = []
-    
-    valid_indices = np.where(~missing_mask)[0]
-    
-    for i in range(len(valid_indices) - window_size - output_size + 1):
-        idx_start = valid_indices[i]
-        idx_end = valid_indices[i] + window_size
-        
-        # 检查窗口内是否都是有效数据
-        if idx_end > len(data):
-            continue
-        window_mask = missing_mask[idx_start:idx_end]
-        if np.any(window_mask):
-            continue
-        
-        # 价格历史 + 当前特征
-        price_history = data[idx_start:idx_end]
-        current_features = features[idx_end - 1]  # 窗口最后一个时刻的特征
-        
-        # 合并特征：价格历史 + 外部特征
-        combined_input = np.concatenate([price_history, current_features])
-        X_list.append(combined_input)
-        
-        # 预测目标：接下来的output_size个价格
-        target_idx = valid_indices[i] + window_size
-        if target_idx + output_size <= len(data):
-            y_list.append(data[target_idx:target_idx + output_size])
-    
-    if len(X_list) < 10:
-        print("警告：训练样本不足，使用线性插值")
-        return LinearInterpolationImputer().impute(data)
-    
-    X_train = np.array(X_list, dtype=np.float32)
-    y_train = np.array(y_list, dtype=np.float32)
-    
-    # 检查并处理NaN/Inf
-    if np.any(np.isnan(X_train)) or np.any(np.isinf(X_train)):
-        print(f"警告：训练数据中有NaN/Inf，进行清理...")
-        print(f"  NaN数量: {np.sum(np.isnan(X_train))}")
-        print(f"  Inf数量: {np.sum(np.isinf(X_train))}")
-        X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
-    
-    if np.any(np.isnan(y_train)) or np.any(np.isinf(y_train)):
-        print(f"警告：训练目标中有NaN/Inf，进行清理...")
-        y_train = np.nan_to_num(y_train, nan=0.0, posinf=0.0, neginf=0.0)
-    
-    # 对价格历史部分进行标准化（前window_size列是价格）
-    price_mean = np.mean(X_train[:, :window_size])
-    price_std = np.std(X_train[:, :window_size]) + 1e-8
-    X_train[:, :window_size] = (X_train[:, :window_size] - price_mean) / price_std
-    
-    # 对目标也进行标准化
-    y_mean = np.mean(y_train)
-    y_std = np.std(y_train) + 1e-8
-    y_train_norm = (y_train - y_mean) / y_std
-    
-    print(f"训练样本数：{len(X_train)}")
-    print(f"输入维度：{X_train.shape[1]} (价格历史{window_size} + 特征{X_train.shape[1]-window_size})")
-    print(f"价格标准化: mean={price_mean:.2f}, std={price_std:.2f}")
-    print(f"目标标准化: mean={y_mean:.2f}, std={y_std:.2f}")
-    
-    # 创建并训练模型
-    model = MLPModel(
-        input_dim=X_train.shape[1],
-        output_dim=output_size,
-        hidden_dims=hidden_dims,
-        batch_size=batch_size,
-        epochs=epochs,
-        lr=lr,
-        device='cuda'
-    )
-    
-    model.fit(X_train, y_train_norm)
-    print(f"特征增强MLP训练完成 ({epochs}轮)")
-    
-    # 保存标准化参数用于预测
-    norm_params = {
-        'price_mean': price_mean,
-        'price_std': price_std,
-        'y_mean': y_mean,
-        'y_std': y_std
-    }
-    
-    # 填充缺失值
-    gap_indices = np.where(missing_mask)[0]
-    if len(gap_indices) == 0:
-        return filled
-    
-    # 将缺失段分组
-    gap_groups = []
-    current_group = [gap_indices[0]]
-    
-    for i in range(1, len(gap_indices)):
-        if gap_indices[i] == gap_indices[i-1] + 1:
-            current_group.append(gap_indices[i])
-        else:
-            gap_groups.append(current_group)
-            current_group = [gap_indices[i]]
-    gap_groups.append(current_group)
-    
-    # 对每个缺失段进行填充
-    for gap_group in gap_groups:
-        chunk_start = gap_group[0]
-        chunk_end = gap_group[-1] + 1
-        chunk_length = chunk_end - chunk_start
-        
-        current_pos = chunk_start
-        while current_pos < chunk_end:
-            predict_length = min(output_size, chunk_end - current_pos)
-            
-            # 构建输入
-            if current_pos >= window_size:
-                price_window = filled[current_pos - window_size:current_pos]
-                current_feat = features[current_pos - 1]  # 使用当前时刻的特征
-            else:
-                price_window = np.pad(filled[:current_pos], 
-                                    (window_size - current_pos, 0), 
-                                    mode='edge')
-                current_feat = features[current_pos] if current_pos < len(features) else features[0]
-            
-            # 处理价格窗口中的NaN
-            price_window = pd.Series(price_window).interpolate(method='linear').values
-            price_window = np.nan_to_num(price_window, nan=np.nanmean(filled))
-            
-            # 对价格窗口进行标准化
-            price_window_norm = (price_window - norm_params['price_mean']) / norm_params['price_std']
-            
-            # 合并输入
-            combined_input = np.concatenate([price_window_norm, current_feat])
-            
-            # 预测
-            try:
-                prediction_norm = model.predict(combined_input.reshape(1, -1))[0]
-                # 反标准化
-                prediction = prediction_norm * norm_params['y_std'] + norm_params['y_mean']
-                actual_length = min(predict_length, len(prediction))
-                filled[current_pos:current_pos + actual_length] = prediction[:actual_length]
-                current_pos += actual_length
-            except Exception as e:
-                print(f"预测失败，使用插值：{str(e)}")
-                filled[current_pos:chunk_end] = np.nanmean(filled)
-                break
-    
-    # 确保没有NaN
-    if np.any(np.isnan(filled)):
-        filled = pd.Series(filled).interpolate(method='linear').values
-        filled = np.nan_to_num(filled, nan=np.nanmean(filled))
-    
-    return filled
-
 
 if __name__ == "__main__":
     import sys
