@@ -150,7 +150,7 @@ merged_df['小时'] = merged_df['时段'].str.extract(r'(\d+):')
 # 转换为数值类型，无法转换的（包括NaN）将变为NaN
 merged_df['小时'] = pd.to_numeric(merged_df['小时'], errors='coerce')
 # 安全地进行比较（使用 fillna(False) 处理 NaN 值）
-merged_df['是否高峰时段'] = ((merged_df['小时'] >= 8) & (merged_df['小时'] <= 20)).fillna(False).astype(int)
+merged_df['是否高峰时段'] = ((merged_df['小时'] >= 8) & (merged_df['小时'] <= 15)).fillna(False).astype(int)
 merged_df['是否夜间'] = ((merged_df['小时'] >= 22) | (merged_df['小时'] <= 6)).fillna(False).astype(int)
 
 # 重新排列列顺序，使时间相关列在前

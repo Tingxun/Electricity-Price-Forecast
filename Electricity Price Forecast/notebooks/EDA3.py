@@ -618,16 +618,21 @@ class OptimizedMLPImputer(BaseImputer):
         input_dim = X_train.shape[1]
         print(f"  训练样本数: {len(X_train)}, 验证样本数: {len(X_val)}, 输入维度: {input_dim}")
         
-        # 定义超参数搜索空间
+        # 定义超参数搜索空间（扩大搜索范围）
         param_grid = {
             'hidden_dims': [
+                [64, 32],
                 [128, 64],
+                [128, 64, 32],
                 [256, 128],
                 [256, 128, 64],
+                [256, 128, 64, 32],
+                [512, 256],
                 [512, 256, 128],
+                [512, 256, 128, 64],
             ],
-            'lr': [0.001, 0.0005, 0.0001],
-            'batch_size': [32, 64, 128]
+            'lr': [0.002, 0.001, 0.0005, 0.0001],
+            'batch_size': [16, 32, 64, 128]
         }
         
         # 生成所有参数组合
@@ -670,8 +675,8 @@ class OptimizedMLPImputer(BaseImputer):
                     verbose=False
                 )
                 
-                # 训练模型
-                model.fit(X_train, y_train)
+                # 训练模型（使用早停）
+                model.fit(X_train, y_train, X_val, y_val, early_stopping=True, patience=15, min_delta=0.001)
                 
                 # 验证
                 predictions = model.predict(X_val)
@@ -817,6 +822,262 @@ class OptimizedMLPImputer(BaseImputer):
         if np.any(np.isnan(filled)):
             nan_indices = np.where(np.isnan(filled))[0]
             print(f"  警告：填充后仍有 {len(nan_indices)} 个 NaN 值，使用均值填充")
+            filled = pd.Series(filled).interpolate(method='linear').values
+            filled = np.nan_to_num(filled, nan=np.nanmean(filled))
+        
+        return filled
+
+
+class XGBoostImputer(BaseImputer):
+    """XGBoost填充器，使用价格数据、小时、是否高峰时段三个特征"""
+    
+    def __init__(self, window_size: int = 48, output_size: int = 24,
+                 n_estimators: int = 100, max_depth: int = 6, lr: float = 0.1):
+        super().__init__("XGBoost")
+        self.window_size = window_size
+        self.output_size = output_size
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.lr = lr
+        self.models = []  # 每个输出位置一个模型
+        self.hour_feature = None
+        self.peak_feature = None
+        
+    def fit(self, data: np.ndarray, missing_mask: np.ndarray, 
+            hour_feature: np.ndarray = None, peak_feature: np.ndarray = None,
+            original_data: np.ndarray = None):
+        """
+        训练XGBoost模型
+        
+        Parameters
+        ----------
+        data : np.ndarray
+            目标价格数据（包含缺失值，用于构建输入特征）
+        missing_mask : np.ndarray
+            缺失值掩码
+        hour_feature : np.ndarray
+            小时特征（0-23）
+        peak_feature : np.ndarray
+            是否高峰时段特征（0或1）
+        original_data : np.ndarray, optional
+            原始完整数据（不包含缺失值，用于训练目标）
+        """
+        print(f"\n  训练XGBoost模型 (n_estimators={self.n_estimators}, max_depth={self.max_depth})...")
+        
+        # 保存特征
+        self.hour_feature = hour_feature
+        self.peak_feature = peak_feature
+        
+        # 从 tree_models 导入 XGBoost
+        try:
+            import sys
+            import os
+            project_root = os.path.join(os.path.dirname(__file__), '..')
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+            from models.tree_models import XGBoostModel, has_xgboost
+            if not has_xgboost:
+                print("  警告：XGBoost 不可用，使用线性插值代替")
+                return
+        except ImportError as e:
+            print(f"  警告：无法导入 XGBoostModel：{e}，使用线性插值代替")
+            return
+        
+        # 使用原始完整数据作为训练目标，如果没有则使用线性插值填充
+        if original_data is not None:
+            train_target = original_data
+            # 对于输入特征，使用线性插值填充缺失值
+            input_data = pd.Series(data).interpolate(method='linear').values
+            input_data = np.nan_to_num(input_data, nan=np.nanmean(input_data))
+        else:
+            # 如果没有提供原始数据，使用插值填充
+            train_target = pd.Series(data).interpolate(method='linear').values
+            train_target = np.nan_to_num(train_target, nan=np.nanmean(train_target))
+            input_data = train_target
+        
+        valid_indices = np.where(~missing_mask)[0]
+        
+        if len(valid_indices) < self.window_size + self.output_size:
+            print(f"  警告：有效数据不足")
+            return
+        
+        # 构建训练样本
+        X_list = []
+        y_list = [[] for _ in range(self.output_size)]  # 每个输出位置一个列表
+        
+        for i in range(len(valid_indices) - self.window_size - self.output_size + 1):
+            idx = valid_indices[i]
+            end_idx = idx + self.window_size
+            
+            # 检查窗口内是否连续且有效
+            if end_idx >= len(data):
+                continue
+            if np.any(missing_mask[idx:end_idx]):
+                continue
+            
+            # 检查目标区域是否有缺失值
+            target_end = end_idx + self.output_size
+            if target_end > len(data) or np.any(missing_mask[end_idx:target_end]):
+                continue
+            
+            # 特征1：价格历史（使用插值填充后的数据）
+            price_history = input_data[idx:end_idx]
+            
+            # 特征2：小时（当前时刻）
+            hour_val = hour_feature[end_idx] if hour_feature is not None else (end_idx % 24)
+            
+            # 特征3：是否高峰时段（当前时刻）
+            peak_val = peak_feature[end_idx] if peak_feature is not None else 0
+            
+            # 合并特征：价格历史 + 小时 + 是否高峰时段
+            combined_input = np.concatenate([price_history, [hour_val, peak_val]])
+            
+            X_list.append(combined_input)
+            
+            # 为每个输出位置收集目标值
+            for j in range(self.output_size):
+                y_list[j].append(train_target[end_idx + j])
+        
+        if len(X_list) < 10:
+            print(f"  警告：训练样本不足")
+            return
+        
+        X_train = np.array(X_list, dtype=np.float32)
+        
+        # 检查并清理NaN
+        if np.any(np.isnan(X_train)):
+            print(f"  警告：训练数据中存在NaN，进行清理...")
+            X_train = np.nan_to_num(X_train, nan=0.0)
+        
+        print(f"  训练样本数: {len(X_train)}, 输入维度: {X_train.shape[1]}")
+        
+        # 为每个输出位置训练一个XGBoost模型
+        self.models = []
+        for j in range(self.output_size):
+            y_train = np.array(y_list[j], dtype=np.float32)
+            
+            # 清理y中的NaN
+            if np.any(np.isnan(y_train)):
+                y_train = np.nan_to_num(y_train, nan=np.nanmean(y_train))
+            
+            # 使用 XGBoostModel（单输出模式）
+            model = XGBoostModel(
+                name=f"XGBoost_{j}",
+                multi_output=False,
+                n_estimators=self.n_estimators,
+                max_depth=self.max_depth,
+                learning_rate=self.lr,
+                objective='reg:squarederror',
+                random_state=42,
+                n_jobs=-1
+            )
+            model.fit(X_train, y_train)
+            self.models.append(model)
+        
+        print(f"  XGBoost模型训练完成 ({self.output_size}个模型)")
+    
+    def impute(self, data: np.ndarray, hour_feature: np.ndarray = None, 
+               peak_feature: np.ndarray = None) -> np.ndarray:
+        """
+        使用XGBoost填充缺失值
+        
+        Parameters
+        ----------
+        data : np.ndarray
+            待填充数据
+        hour_feature : np.ndarray
+            小时特征（0-23），如果为None则使用fit时传入的特征
+        peak_feature : np.ndarray
+            是否高峰时段特征，如果为None则使用fit时传入的特征
+        """
+        if len(self.models) == 0:
+            print("  警告：XGBoost模型未训练，使用线性插值代替")
+            return LinearInterpolationImputer().impute(data)
+        
+        # 使用传入的特征或fit时保存的特征
+        if hour_feature is None:
+            hour_feature = self.hour_feature
+        if peak_feature is None:
+            peak_feature = self.peak_feature
+        
+        filled = data.copy()
+        missing_mask = np.isnan(data)
+        
+        if not np.any(missing_mask):
+            return filled
+        
+        # 找到所有缺失段
+        gap_indices = np.where(missing_mask)[0]
+        if len(gap_indices) == 0:
+            return filled
+        
+        # 将缺失段分组为连续区间
+        gap_groups = []
+        current_group = [gap_indices[0]]
+        
+        for i in range(1, len(gap_indices)):
+            if gap_indices[i] == gap_indices[i-1] + 1:
+                current_group.append(gap_indices[i])
+            else:
+                gap_groups.append(current_group)
+                current_group = [gap_indices[i]]
+        
+        gap_groups.append(current_group)
+        
+        # 对每个缺失段进行填充
+        for gap_group in gap_groups:
+            chunk_start = gap_group[0]
+            chunk_end = gap_group[-1] + 1
+            chunk_length = chunk_end - chunk_start
+            
+            # 使用滚动预测处理任意长度的缺失段
+            current_pos = chunk_start
+            while current_pos < chunk_end:
+                # 计算本次预测的长度
+                predict_length = min(self.output_size, chunk_end - current_pos)
+                
+                # 构建输入窗口
+                if current_pos >= self.window_size:
+                    input_window = filled[current_pos - self.window_size:current_pos]
+                else:
+                    input_window = np.pad(filled[:current_pos], 
+                                        (self.window_size - current_pos, 0), 
+                                        mode='edge')
+                
+                # 处理输入窗口中的 NaN（用线性插值临时填充）
+                input_window = pd.Series(input_window).interpolate(method='linear').values
+                input_window = np.nan_to_num(input_window, nan=0.0)
+                
+                # 特征2：小时（当前时刻）
+                hour_val = hour_feature[current_pos] if hour_feature is not None else (current_pos % 24)
+                
+                # 特征3：是否高峰时段（当前时刻）
+                peak_val = peak_feature[current_pos] if peak_feature is not None else 0
+                
+                # 合并特征
+                combined_input = np.concatenate([input_window, [hour_val, peak_val]])
+                
+                # 预测
+                try:
+                    # 使用每个模型预测对应位置的值
+                    predictions = []
+                    for j in range(min(predict_length, len(self.models))):
+                        pred = self.models[j].predict(combined_input.reshape(1, -1))[0]
+                        predictions.append(pred)
+                    
+                    actual_length = len(predictions)
+                    filled[current_pos:current_pos + actual_length] = predictions
+                    current_pos += actual_length
+                except Exception as e:
+                    print(f"    预测失败，使用插值：{str(e)}")
+                    # 预测失败时使用均值填充
+                    filled[current_pos:chunk_end] = np.nanmean(filled)
+                    break
+        
+        # 确保没有 NaN
+        if np.any(np.isnan(filled)):
+            nan_indices = np.where(np.isnan(filled))[0]
+            print(f"  警告：填充后仍有 {len(nan_indices)} 个 NaN 值，使用线性插值填充")
             filled = pd.Series(filled).interpolate(method='linear').values
             filled = np.nan_to_num(filled, nan=np.nanmean(filled))
         
@@ -1059,33 +1320,36 @@ def plot_comparison(original_data: np.ndarray, data_with_missing: np.ndarray,
 def plot_three_methods_comparison(test_data: np.ndarray, test_missing_mask: np.ndarray,
                                   results: Dict, target_col: str = "电价"):
     """
-    绘制三张子图对比：线性插值、MLP、优化MLP
-    每张子图显示实际值和填充值
+    绘制三张子图对比：线性插值、MLP、XGBoost
+    每张子图显示完整测试集区间的实际值和填充值
     """
-    # 选择测试集中第一个缺失区域进行展示
+    # 获取所有缺失区域
     missing_indices = np.where(test_missing_mask)[0]
     
     if len(missing_indices) == 0:
         print("测试集中没有缺失值，无法绘制对比图")
         return
     
-    # 找到第一个缺失区域
-    gap_start = missing_indices[0]
-    gap_end = missing_indices[0]
-    for i in range(1, len(missing_indices)):
-        if missing_indices[i] == missing_indices[i-1] + 1:
-            gap_end = missing_indices[i]
-        else:
-            break
+    # 显示完整测试集区间
+    display_start = 0
+    display_end = len(test_data)
     
-    # 扩展显示范围（前后各48小时）
-    display_start = max(0, gap_start - 48)
-    display_end = min(len(test_data), gap_end + 48 + 1)
+    # 找到所有缺失区域（用于标记）
+    gap_groups = []
+    if len(missing_indices) > 0:
+        current_group = [missing_indices[0]]
+        for i in range(1, len(missing_indices)):
+            if missing_indices[i] == missing_indices[i-1] + 1:
+                current_group.append(missing_indices[i])
+            else:
+                gap_groups.append((current_group[0], current_group[-1] + 1))
+                current_group = [missing_indices[i]]
+        gap_groups.append((current_group[0], current_group[-1] + 1))
     
     # 创建图形
-    fig, axes = plt.subplots(3, 1, figsize=(16, 12))
+    fig, axes = plt.subplots(3, 1, figsize=(20, 14))
     
-    methods = ['线性插值', 'MLP', '优化MLP']
+    methods = ['线性插值', 'MLP', 'XGBoost']
     colors = {'实际值': 'black', '填充值': 'red'}
     
     for idx, method in enumerate(methods):
@@ -1094,24 +1358,27 @@ def plot_three_methods_comparison(test_data: np.ndarray, test_missing_mask: np.n
         # 绘制实际值
         ax.plot(range(display_start, display_end), 
                 test_data[display_start:display_end],
-                label='实际值', color=colors['实际值'], linewidth=2, alpha=0.8)
+                label='实际值', color=colors['实际值'], linewidth=1.5, alpha=0.8)
         
         # 绘制填充值
         if method in results:
             filled_data = results[method]['filled_data']
             ax.plot(range(display_start, display_end),
                    filled_data[display_start:display_end],
-                   label='填充值', color=colors['填充值'], linewidth=2, alpha=0.8, linestyle='--')
+                   label='填充值', color=colors['填充值'], linewidth=1.5, alpha=0.7, linestyle='--')
         
-        # 标记缺失区域
-        ax.axvspan(gap_start, gap_end + 1, alpha=0.2, color='blue', label='缺失区域')
+        # 标记所有缺失区域
+        for gap_start, gap_end in gap_groups:
+            ax.axvspan(gap_start, gap_end, alpha=0.15, color='blue')
         
-        # 计算该区域的RMSE
+        # 添加缺失区域图例（只添加一次）
+        if gap_groups:
+            ax.axvspan(0, 0, alpha=0.15, color='blue', label='缺失区域')
+        
+        # 计算整体RMSE（整个测试集）
         if method in results:
-            region_mask = np.zeros_like(test_missing_mask, dtype=bool)
-            region_mask[gap_start:gap_end+1] = True
-            region_rmse = calculate_rmse(test_data, results[method]['filled_data'], region_mask)
-            title = f'{method} (区域RMSE: {region_rmse:.2f})'
+            overall_rmse = calculate_rmse(test_data, results[method]['filled_data'], test_missing_mask)
+            title = f'{method} (测试集RMSE: {overall_rmse:.2f})'
         else:
             title = method
         
@@ -1119,18 +1386,21 @@ def plot_three_methods_comparison(test_data: np.ndarray, test_missing_mask: np.n
         ax.legend(loc='best', fontsize=11)
         ax.grid(True, alpha=0.3)
         ax.set_ylabel(target_col, fontsize=12)
+        ax.set_xlim(display_start, display_end)
         
         # 只在最后一个子图显示x轴标签
         if idx == 2:
-            ax.set_xlabel('时间点', fontsize=12)
+            ax.set_xlabel('时间点（测试集）', fontsize=12)
     
-    plt.suptitle('三种填充方法效果对比（测试集）', fontsize=16, fontweight='bold', y=0.995)
+    plt.suptitle('三种填充方法效果对比（完整测试集）', fontsize=16, fontweight='bold', y=0.995)
     plt.tight_layout()
     
     # 保存图片
     save_path = os.path.join(os.path.dirname(__file__), 'eda3_three_methods_comparison.png')
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"\n三种方法对比图已保存：{save_path}")
+    print(f"  显示范围：完整测试集（{display_start}-{display_end}，共{display_end}个时间点）")
+    print(f"  缺失区域数量：{len(gap_groups)}个")
     
     plt.show()
 
@@ -1140,7 +1410,7 @@ def plot_three_methods_comparison(test_data: np.ndarray, test_missing_mask: np.n
 # ============================================================================
 
 def split_train_val_test(data: np.ndarray, hour_feature: np.ndarray, 
-                         train_ratio=0.6, val_ratio=0.2):
+                         peak_feature: np.ndarray, train_ratio=0.6, val_ratio=0.2):
     """
     严格按时间顺序划分训练/验证/测试集
     
@@ -1154,14 +1424,17 @@ def split_train_val_test(data: np.ndarray, hour_feature: np.ndarray,
     
     train_data = data[:train_end]
     train_hour = hour_feature[:train_end]
+    train_peak = peak_feature[:train_end]
     train_indices = np.arange(0, train_end)
     
     val_data = data[train_end:val_end]
     val_hour = hour_feature[train_end:val_end]
+    val_peak = peak_feature[train_end:val_end]
     val_indices = np.arange(train_end, val_end)
     
     test_data = data[val_end:]
     test_hour = hour_feature[val_end:]
+    test_peak = peak_feature[val_end:]
     test_indices = np.arange(val_end, n)
     
     print(f"  数据集划分:")
@@ -1169,7 +1442,7 @@ def split_train_val_test(data: np.ndarray, hour_feature: np.ndarray,
     print(f"    验证集: {len(val_data)} 样本 (索引 {train_end}-{val_end-1})")
     print(f"    测试集: {len(test_data)} 样本 (索引 {val_end}-{n-1})")
     
-    return (train_data, train_hour, train_indices), (val_data, val_hour, val_indices), (test_data, test_hour, test_indices)
+    return (train_data, train_hour, train_peak, train_indices), (val_data, val_hour, val_peak, val_indices), (test_data, test_hour, test_peak, test_indices)
 
 
 def run_test(data_path: str = None, target_col: str = "平均出清价格 - 日前（元/MWh）",
@@ -1219,7 +1492,7 @@ def run_test(data_path: str = None, target_col: str = "平均出清价格 - 日�
     df_segment = df_reset.iloc[time_slice].copy()
     original_data = df_segment[target_col].values.astype(float)
     
-    # 4. 提取小时特征
+    # 4. 提取特征（小时、是否高峰时段）
     print("\n" + "=" * 60)
     print("特征工程")
     print("=" * 60)
@@ -1239,12 +1512,22 @@ def run_test(data_path: str = None, target_col: str = "平均出清价格 - 日�
     
     print(f"  小时特征范围: {hour_feature.min()}-{hour_feature.max()}")
     
+    # 从数据中提取是否高峰时段特征
+    if '是否高峰时段' in df_segment.columns:
+        peak_feature = df_segment['是否高峰时段'].values
+        print(f"  是否高峰时段特征: 从数据中提取")
+    else:
+        # 如果没有该特征，根据小时计算（8-15点为高峰时段）
+        peak_feature = ((hour_feature >= 8) & (hour_feature <= 15)).astype(int)
+        print(f"  是否高峰时段特征: 根据小时计算（8-15点为高峰时段）")
+    print(f"  高峰时段占比: {peak_feature.mean()*100:.1f}%")
+    
     # 5. 严格划分训练/验证/测试集
     print("\n" + "=" * 60)
     print("数据集划分（按时间顺序）")
     print("=" * 60)
-    (train_data, train_hour, train_indices), (val_data, val_hour, val_indices), (test_data, test_hour, test_indices) = \
-        split_train_val_test(original_data, hour_feature, train_ratio=0.6, val_ratio=0.2)
+    (train_data, train_hour, train_peak, train_indices), (val_data, val_hour, val_peak, val_indices), (test_data, test_hour, test_peak, test_indices) = \
+        split_train_val_test(original_data, hour_feature, peak_feature, train_ratio=0.6, val_ratio=0.2)
     
     # 6. 在训练集上生成缺失值并训练模型
     print("\n" + "=" * 60)
@@ -1267,22 +1550,34 @@ def run_test(data_path: str = None, target_col: str = "平均出清价格 - 日�
     )
     mlp_imputer.fit(train_data_missing, train_missing_mask, train_hour, train_data)
     
-    # 6.2 在训练集+验证集上训练优化MLP（使用验证集选择超参数）
-    print("\n  训练优化MLP模型（使用验证集选择超参数）...")
-    # 合并训练集和验证集用于超参数搜索
-    train_val_data = np.concatenate([train_data, val_data])
-    train_val_hour = np.concatenate([train_hour, val_hour])
-    train_val_missing, train_val_mask, _, _ = generate_missing_values(
-        train_val_data, missing_rate=missing_rate, min_gap=24, max_gap=48
-    )
-    
-    opt_mlp_imputer = OptimizedMLPImputer(
+    # 6.2 在训练集上训练XGBoost模型
+    print("\n  训练XGBoost模型...")
+    xgb_imputer = XGBoostImputer(
         window_size=48,
         output_size=24,
-        epochs=100,
-        n_trials=36  # 减少试验次数以加快训练
+        n_estimators=100,
+        max_depth=6,
+        lr=0.1
     )
-    opt_mlp_imputer.fit(train_val_data, train_val_mask, train_val_hour, train_val_data)
+    xgb_imputer.fit(train_data_missing, train_missing_mask, train_hour, train_peak, train_data)
+    
+    # 【暂时注释掉】6.3 在训练集+验证集上训练优化MLP（使用验证集选择超参数）
+    # print("\n  训练优化MLP模型（使用验证集选择超参数）...")
+    # # 合并训练集和验证集用于超参数搜索
+    # train_val_data = np.concatenate([train_data, val_data])
+    # train_val_hour = np.concatenate([train_hour, val_hour])
+    # train_val_peak = np.concatenate([train_peak, val_peak])
+    # train_val_missing, train_val_mask, _, _ = generate_missing_values(
+    #     train_val_data, missing_rate=missing_rate, min_gap=24, max_gap=48
+    # )
+    # 
+    # opt_mlp_imputer = OptimizedMLPImputer(
+    #     window_size=48,
+    #     output_size=24,
+    #     epochs=100,
+    #     n_trials=100  # 测试100组超参数
+    # )
+    # opt_mlp_imputer.fit(train_val_data, train_val_mask, train_val_hour, train_val_data)
     
     # 7. 在测试集上评估所有方法
     print("\n" + "=" * 60)
@@ -1315,19 +1610,28 @@ def run_test(data_path: str = None, target_col: str = "平均出清价格 - 日�
     results['MLP'] = {'rmse': mlp_rmse, 'filled_data': mlp_filled}
     print(f"  测试集RMSE: {mlp_rmse:.4f}")
     
-    # 7.3 优化MLP
+    # 7.3 XGBoost
     print("\n" + "=" * 60)
-    print("3. 优化MLP（网格搜索超参数）")
+    print("3. XGBoost（价格历史+小时+是否高峰时段）")
     print("=" * 60)
-    opt_mlp_filled = opt_mlp_imputer.impute(test_data_missing, test_hour)
-    opt_mlp_rmse = calculate_rmse(test_data, opt_mlp_filled, test_missing_mask)
-    results['优化MLP'] = {'rmse': opt_mlp_rmse, 'filled_data': opt_mlp_filled}
-    print(f"  测试集RMSE: {opt_mlp_rmse:.4f}")
+    xgb_filled = xgb_imputer.impute(test_data_missing, test_hour, test_peak)
+    xgb_rmse = calculate_rmse(test_data, xgb_filled, test_missing_mask)
+    results['XGBoost'] = {'rmse': xgb_rmse, 'filled_data': xgb_filled}
+    print(f"  测试集RMSE: {xgb_rmse:.4f}")
     
-    # 保存优化结果信息
-    if opt_mlp_imputer.best_params is not None:
-        results['优化MLP']['best_params'] = opt_mlp_imputer.best_params
-        print(f"  最优超参数: {opt_mlp_imputer.best_params}")
+    # 【暂时注释掉】7.4 优化MLP
+    # print("\n" + "=" * 60)
+    # print("4. 优化MLP（网格搜索超参数）")
+    # print("=" * 60)
+    # opt_mlp_filled = opt_mlp_imputer.impute(test_data_missing, test_hour)
+    # opt_mlp_rmse = calculate_rmse(test_data, opt_mlp_filled, test_missing_mask)
+    # results['优化MLP'] = {'rmse': opt_mlp_rmse, 'filled_data': opt_mlp_filled}
+    # print(f"  测试集RMSE: {opt_mlp_rmse:.4f}")
+    # 
+    # # 保存优化结果信息
+    # if opt_mlp_imputer.best_params is not None:
+    #     results['优化MLP']['best_params'] = opt_mlp_imputer.best_params
+    #     print(f"  最优超参数: {opt_mlp_imputer.best_params}")
     
     # 6. 打印最终结果
     print("\n" + "=" * 80)
@@ -1347,13 +1651,13 @@ def run_test(data_path: str = None, target_col: str = "平均出清价格 - 日�
         improvement = (baseline_rmse - rmse) / baseline_rmse * 100
         print(f"{name:<30} {rmse:>12.4f} {improvement:>11.2f}%")
     
-    # 打印优化详情
-    if '优化MLP' in results and 'best_params' in results['优化MLP']:
-        print("\n" + "=" * 80)
-        print("优化MLP 超参数详情")
-        print("=" * 80)
-        for param, value in results['优化MLP']['best_params'].items():
-            print(f"  {param}: {value}")
+    # 【暂时注释掉】打印优化详情
+    # if '优化MLP' in results and 'best_params' in results['优化MLP']:
+    #     print("\n" + "=" * 80)
+    #     print("优化MLP 超参数详情")
+    #     print("=" * 80)
+    #     for param, value in results['优化MLP']['best_params'].items():
+    #         print(f"  {param}: {value}")
     
     # 8. 绘制三种方法对比图
     print("\n" + "=" * 80)

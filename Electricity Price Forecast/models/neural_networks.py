@@ -51,9 +51,9 @@ class PyTorchModel(BaseModel, nn.Module):
         else:
             return super().parameters(recurse=recurse)
     
-    def fit(self, X, y, **kwargs) -> 'PyTorchModel':
+    def fit(self, X, y, X_val=None, y_val=None, **kwargs) -> 'PyTorchModel':
         """
-        训练PyTorch模型
+        训练PyTorch模型（支持早停）
         
         Parameters
         ----------
@@ -61,6 +61,10 @@ class PyTorchModel(BaseModel, nn.Module):
             训练特征
         y : array-like
             训练目标
+        X_val : array-like, optional
+            验证特征
+        y_val : array-like, optional
+            验证目标
         **kwargs : dict
             额外的训练参数
             
@@ -86,9 +90,29 @@ class PyTorchModel(BaseModel, nn.Module):
             # 如果模型是nn.Sequential（MLP）
             optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         
+        # 早停设置
+        early_stopping = kwargs.get('early_stopping', True)
+        patience = kwargs.get('patience', 15)
+        min_delta = kwargs.get('min_delta', 0.001)
+        
+        best_val_loss = float('inf')
+        patience_counter = 0
+        best_model_state = None
+        
+        # 验证集
+        if X_val is not None and y_val is not None:
+            X_val_tensor = torch.tensor(X_val, dtype=torch.float32).to(self.device)
+            y_val_tensor = torch.tensor(y_val, dtype=torch.float32).to(self.device)
+            val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
+            val_dataloader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
+        else:
+            val_dataloader = None
+        
         # 训练循环
         start_time = time.time()
         for epoch in range(self.epochs):
+            # 训练阶段
+            self.model.train()
             running_loss = 0.0
             
             for batch_X, batch_y in dataloader:
@@ -103,10 +127,50 @@ class PyTorchModel(BaseModel, nn.Module):
                 
                 running_loss += loss.item()
             
+            avg_train_loss = running_loss / len(dataloader)
+            
+            # 验证阶段
+            if val_dataloader is not None:
+                self.model.eval()
+                val_loss = 0.0
+                with torch.no_grad():
+                    for batch_X_val, batch_y_val in val_dataloader:
+                        val_outputs = self.model(batch_X_val)
+                        val_loss += criterion(val_outputs, batch_y_val).item()
+                avg_val_loss = val_loss / len(val_dataloader)
+            else:
+                avg_val_loss = None
+            
             # 打印训练进度
             if self.verbose and (epoch + 1) % 10 == 0:
-                avg_loss = running_loss / len(dataloader)
-                print(f"Epoch [{epoch+1}/{self.epochs}], Loss: {avg_loss:.4f}")
+                if avg_val_loss is not None:
+                    print(f"Epoch [{epoch+1}/{self.epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+                else:
+                    print(f"Epoch [{epoch+1}/{self.epochs}], Loss: {avg_train_loss:.4f}")
+            
+            # 早停检查
+            if early_stopping and val_dataloader is not None:
+                if avg_val_loss < best_val_loss - min_delta:
+                    best_val_loss = avg_val_loss
+                    patience_counter = 0
+                    # 保存最佳模型状态
+                    if self.model is self:
+                        best_model_state = self.state_dict().copy()
+                    else:
+                        best_model_state = self.model.state_dict().copy()
+                else:
+                    patience_counter += 1
+                    
+                if patience_counter >= patience:
+                    if self.verbose:
+                        print(f"早停触发！在第 {epoch + 1} 轮停止训练")
+                    # 恢复最佳模型
+                    if best_model_state is not None:
+                        if self.model is self:
+                            self.load_state_dict(best_model_state)
+                        else:
+                            self.model.load_state_dict(best_model_state)
+                    break
 
         self.is_fitted = True
         training_time = time.time() - start_time
