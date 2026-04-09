@@ -10,6 +10,7 @@ import os
 import sys
 import numpy as np
 import pandas as pd
+import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Dict, Tuple
@@ -55,11 +56,33 @@ def find_longest_segment(data: pd.DataFrame, target_col: str) -> pd.DataFrame:
     return data.iloc[longest[0]:longest[1]].copy()
 
 
-def extract_features(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-    """提取时间特征"""
-    hour = df['小时'].values if '小时' in df.columns else np.arange(len(df)) % 24
-    peak = df['是否高峰时段'].values if '是否高峰时段' in df.columns else ((hour >= 8) & (hour <= 15)).astype(int)
-    return hour, peak
+def extract_features(df: pd.DataFrame) -> pd.DataFrame:
+    """提取增强特征（不使用实时数据）"""
+    features = pd.DataFrame(index=df.index)
+    n = len(df)
+    
+    # 基础时间特征
+    features['is_peak'] = df['是否高峰时段'].values if '是否高峰时段' in df.columns else ((features['hour'] >= 8) & (features['hour'] <= 15)).astype(int)
+    features['day_of_week'] = df['星期'].values if '星期' in df.columns else np.zeros(n)
+    features['month'] = df['月'].values if '月' in df.columns else np.ones(n)
+    
+    # 周期性编码（正弦/余弦变换）
+    features['hour_sin'] = np.sin(2 * np.pi * df['小时'] / 24)
+    features['dow_cos'] = np.cos(2 * np.pi * df['星期'] / 7)
+    
+    # 日前市场边界特征（不使用实时数据）
+    dayahead_boundary_cols = [
+        '系统负荷-日前',
+        '风电出力-日前',
+        '光伏出力-日前',
+        '水电出力-日前',
+        '联络线计划-日前',
+    ]
+    for col in dayahead_boundary_cols:
+        if col in df.columns:
+            features[col] = df[col].values
+    
+    return features
 
 
 def generate_missing(data: np.ndarray, missing_rate: float = 0.2, 
@@ -109,11 +132,27 @@ class XGBImputer:
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.models = []
+        self.feature_names = None
+        self.n_features = 0
     
     def fit(self, data: np.ndarray, missing_mask: np.ndarray,
-            hour_feat: np.ndarray = None, peak_feat: np.ndarray = None,
-            dayahead_filled: np.ndarray = None, original: np.ndarray = None):
-        """训练XGBoost模型"""
+            features_df: pd.DataFrame = None, dayahead_filled: np.ndarray = None,
+            original: np.ndarray = None):
+        """训练XGBoost模型
+        
+        Parameters
+        ----------
+        data : np.ndarray
+            含缺失值的数据
+        missing_mask : np.ndarray
+            缺失值掩码
+        features_df : pd.DataFrame
+            特征DataFrame（包含时间特征、市场边界特征等）
+        dayahead_filled : np.ndarray
+            填充后的日前价格（用于实时价格填充）
+        original : np.ndarray
+            原始完整数据（用于训练）
+        """
         try:
             from models.tree_models import XGBoostModel, has_xgboost
             if not has_xgboost:
@@ -131,6 +170,15 @@ class XGBImputer:
         X_list = [[] for _ in range(self.output_size)]
         y_list = [[] for _ in range(self.output_size)]
         
+        # 构建特征名称列表
+        self.feature_names = [f'price_t-{self.window_size-i}' for i in range(self.window_size)]
+        if features_df is not None:
+            self.feature_names.extend(features_df.columns.tolist())
+        else:
+            self.feature_names.extend(['hour', 'is_peak'])
+        if dayahead_filled is not None:
+            self.feature_names.append('dayahead_price')
+        
         for i in range(len(valid_idx) - self.window_size - self.output_size + 1):
             idx = valid_idx[i]
             end_idx = idx + self.window_size
@@ -141,15 +189,22 @@ class XGBImputer:
             if np.any(missing_mask[idx:end_idx]) or np.any(missing_mask[end_idx:target_end]):
                 continue
             
+            # 历史价格窗口
             price_hist = input_data[idx:end_idx]
-            hour = hour_feat[end_idx] if hour_feat is not None else end_idx % 24
-            peak = peak_feat[end_idx] if peak_feat is not None else 0
             
-            features = [hour, peak]
+            # 其他特征
+            other_features = []
+            if features_df is not None:
+                other_features.extend(features_df.iloc[end_idx].values)
+            else:
+                hour = end_idx % 24
+                peak = 1 if 8 <= hour <= 15 else 0
+                other_features.extend([hour, peak])
+            
             if dayahead_filled is not None:
-                features.append(dayahead_filled[end_idx])
+                other_features.append(dayahead_filled[end_idx])
             
-            X = np.concatenate([price_hist, features])
+            X = np.concatenate([price_hist, other_features])
             
             for j in range(self.output_size):
                 X_list[j].append(X)
@@ -159,7 +214,9 @@ class XGBImputer:
             print("  警告：训练样本不足")
             return
         
-        print(f"  训练样本: {len(X_list[0])}, 输入维度: {len(X_list[0][0])}")
+        self.n_features = len(X_list[0][0])
+        print(f"  训练样本: {len(X_list[0])}, 输入维度: {self.n_features}")
+        print(f"  特征列表: {self.feature_names}")
         
         self.models = []
         for j in range(self.output_size):
@@ -183,9 +240,48 @@ class XGBImputer:
             )
             model.fit(X_train, y_train)
             self.models.append(model)
+        print(f"  XGBoost训练完成: {len(self.models)} 个模型")
     
-    def impute(self, data: np.ndarray, hour_feat: np.ndarray = None,
-               peak_feat: np.ndarray = None, dayahead_filled: np.ndarray = None) -> np.ndarray:
+    def get_feature_importance(self) -> np.ndarray:
+        """获取平均特征重要性
+        
+        Returns
+        -------
+        importance : np.ndarray
+            各特征的平均重要性
+        """
+        if len(self.models) == 0:
+            return None
+        
+        importances = []
+        for model in self.models:
+            imp = model.get_feature_importance()
+            if imp is not None:
+                importances.append(imp)
+        
+        if len(importances) == 0:
+            return None
+        
+        return np.mean(importances, axis=0)
+    
+    def impute(self, data: np.ndarray, features_df: pd.DataFrame = None,
+               dayahead_filled: np.ndarray = None) -> np.ndarray:
+        """填充缺失值
+        
+        Parameters
+        ----------
+        data : np.ndarray
+            含缺失值的数据
+        features_df : pd.DataFrame
+            特征DataFrame
+        dayahead_filled : np.ndarray
+            填充后的日前价格
+            
+        Returns
+        -------
+        filled : np.ndarray
+            填充后的数据
+        """
         if len(self.models) == 0:
             return LinearImputer().impute(data)
         
@@ -218,14 +314,20 @@ class XGBImputer:
                     window = np.pad(filled[:pos], (self.window_size - pos, 0), mode='edge')
                 
                 window = pd.Series(window).interpolate().values
-                hour = hour_feat[pos] if hour_feat is not None else pos % 24
-                peak = peak_feat[pos] if peak_feat is not None else 0
                 
-                features = [hour, peak]
+                # 构建其他特征
+                other_features = []
+                if features_df is not None:
+                    other_features.extend(features_df.iloc[pos].values)
+                else:
+                    hour = pos % 24
+                    peak = 1 if 8 <= hour <= 15 else 0
+                    other_features.extend([hour, peak])
+                
                 if dayahead_filled is not None:
-                    features.append(dayahead_filled[pos])
+                    other_features.append(dayahead_filled[pos])
                 
-                X = np.concatenate([window, features]).reshape(1, -1)
+                X = np.concatenate([window, other_features]).reshape(1, -1)
                 
                 preds = []
                 for j in range(min(predict_len, len(self.models))):
@@ -243,6 +345,48 @@ def calc_rmse(original: np.ndarray, filled: np.ndarray, mask: np.ndarray) -> flo
     filled_vals = filled[mask]
     filled_vals = np.nan_to_num(filled_vals, nan=np.nanmean(filled_vals))
     return np.sqrt(mean_squared_error(orig_vals, filled_vals))
+
+
+def calc_mae(original: np.ndarray, filled: np.ndarray, mask: np.ndarray) -> float:
+    """计算MAE（平均绝对误差）"""
+    orig_vals = original[mask]
+    filled_vals = filled[mask]
+    filled_vals = np.nan_to_num(filled_vals, nan=np.nanmean(filled_vals))
+    return np.mean(np.abs(orig_vals - filled_vals))
+
+
+def calc_smape(original: np.ndarray, filled: np.ndarray, mask: np.ndarray) -> float:
+    """计算sMAPE（对称平均绝对百分比误差）
+    
+    sMAPE = (1/n) * Σ(|预测值-实际值| / ((|预测值|+|实际值|)/2)) * 100%
+    """
+    orig_vals = original[mask]
+    filled_vals = filled[mask]
+    
+    # 处理NaN值
+    filled_vals = np.nan_to_num(filled_vals, nan=np.nanmean(filled_vals))
+    
+    # 避免除以0
+    denominator = (np.abs(orig_vals) + np.abs(filled_vals)) / 2
+    denominator = np.where(denominator == 0, 1e-10, denominator)
+    
+    smape = np.mean(np.abs(orig_vals - filled_vals) / denominator) * 100
+    return smape
+
+
+def calc_metrics(original: np.ndarray, filled: np.ndarray, mask: np.ndarray) -> dict:
+    """计算所有评估指标
+    
+    Returns
+    -------
+    metrics : dict
+        包含RMSE、MAE、sMAPE的字典
+    """
+    return {
+        'rmse': calc_rmse(original, filled, mask),
+        'mae': calc_mae(original, filled, mask),
+        'smape': calc_smape(original, filled, mask)
+    }
 
 
 def plot_comparison(test_data: np.ndarray, test_mask: np.ndarray, 
@@ -289,29 +433,100 @@ def plot_comparison(test_data: np.ndarray, test_mask: np.ndarray,
     save_path = os.path.join(os.path.dirname(__file__), 'eda3_comparison.png')
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"对比图已保存：{save_path}")
-    plt.show()
+    plt.close(fig)
 
 
 def print_results(results: Dict, target_name: str):
-    """打印评估结果"""
-    print(f"\n{'='*60}")
+    """打印评估结果（包含RMSE、MAE、sMAPE）"""
+    print(f"\n{'='*80}")
     print(f"{target_name}填充结果")
-    print(f"{'='*60}")
+    print(f"{'='*80}")
     
-    baseline = results['线性插值']['rmse']
-    print(f"{'方法':<20} {'RMSE':>12} {'改进':>12}")
-    print("-" * 50)
+    # 获取基线（线性插值）
+    baseline_rmse = results['线性插值']['rmse']
+    baseline_mae = results['线性插值']['mae']
+    baseline_smape = results['线性插值']['smape']
     
+    # 打印表头
+    print(f"{'方法':<14} {'RMSE':>12} {'改进':>8} {'MAE':>12}  {'sMAPE(%)':>12}")
+    print("-" * 80)
+    
+    # 按RMSE排序打印
     for name, res in sorted(results.items(), key=lambda x: x[1]['rmse']):
         rmse = res['rmse']
-        improvement = (baseline - rmse) / baseline * 100
-        print(f"{name:<20} {rmse:>12.2f} {improvement:>11.1f}%")
+        mae = res['mae']
+        smape = res['smape']
+        
+        rmse_improvement = (baseline_rmse - rmse) / baseline_rmse * 100
+        
+        print(f"{name:<14} {rmse:>12.2f} {rmse_improvement:>7.1f}% {mae:>12.2f}{smape:>12.2f}")
 
 
-def run_pipeline(missing_rate: float = 0.05):
+def plot_feature_importance(imputer: XGBImputer, title: str = "特征重要性", save_path: str = None):
+    """绘制特征重要性图
+    
+    Parameters
+    ----------
+    imputer : XGBImputer
+        XGBoost填充器实例
+    title : str
+        图表标题
+    save_path : str
+        保存路径
+    """
+    importance = imputer.get_feature_importance()
+    if importance is None:
+        print(f"  警告：无法获取{title}的特征重要性")
+        return
+    
+    feature_names = imputer.feature_names
+    
+    # 创建DataFrame便于排序
+    importance_df = pd.DataFrame({
+        'feature': feature_names,
+        'importance': importance
+    }).sort_values('importance', ascending=True)
+    
+    # 只显示重要性前20的特征
+    importance_df = importance_df.tail(20)
+    
+    fig, ax = plt.subplots(figsize=(10, 8))
+    colors = plt.cm.RdYlGn(np.linspace(0.2, 0.8, len(importance_df)))
+    bars = ax.barh(importance_df['feature'], importance_df['importance'], color=colors)
+    
+    ax.set_xlabel('重要性', fontsize=12)
+    ax.set_ylabel('特征', fontsize=12)
+    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='x')
+    
+    # 添加数值标签
+    for bar in bars:
+        width = bar.get_width()
+        ax.text(width, bar.get_y() + bar.get_height()/2, 
+                f'{width:.3f}', ha='left', va='center', fontsize=9)
+    
+    plt.tight_layout()
+    
+    if save_path is None:
+        save_path = os.path.join(os.path.dirname(__file__), f'feature_importance_{title.replace(" ", "_")}.png')
+    
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"特征重要性图已保存：{save_path}")
+    plt.close(fig)  # 关闭图形，避免显示问题
+    
+    # 打印前10重要特征
+    print(f"\n{'='*60}")
+    print(f"{title} - Top 10 重要特征")
+    print(f"{'='*60}")
+    top10 = importance_df.tail(10).iloc[::-1]
+    for idx, row in top10.iterrows():
+        print(f"{row['feature']:<30} {row['importance']:.4f}")
+
+
+def run_pipeline(missing_rate: float = 0.2):
     """运行完整流程"""
     print("="*70)
-    print("缺失值填充性能对比测试")
+    print("缺失值填充性能对比测试（增强特征工程版）")
     print("="*70)
     
     df = load_data()
@@ -337,7 +552,11 @@ def run_pipeline(missing_rate: float = 0.05):
     df_dayahead = find_longest_segment(df, dayahead_col)
     print(f"日前价格最长连续段：{len(df_dayahead)}小时")
     
-    hour_feat, peak_feat = extract_features(df_dayahead)
+    # 提取增强特征
+    features_df_da = extract_features(df_dayahead)
+    print(f"特征数量：{len(features_df_da.columns)}")
+    print(f"特征列表：{list(features_df_da.columns)}")
+    
     dayahead_data = df_dayahead[dayahead_col].values.astype(float)
     
     n = len(dayahead_data)
@@ -346,26 +565,27 @@ def run_pipeline(missing_rate: float = 0.05):
     
     train_data = dayahead_data[:train_end]
     test_data = dayahead_data[val_end:]
-    test_hour = hour_feat[val_end:]
-    test_peak = peak_feat[val_end:]
+    test_features_da = features_df_da.iloc[val_end:].reset_index(drop=True)
     
     np.random.seed(42)
     train_missing, train_mask = generate_missing(train_data, missing_rate)
     
-    xgb_da = XGBImputer(window_size=48, output_size=24, n_estimators=100, max_depth=6)
-    xgb_da.fit(train_missing, train_mask, hour_feat[:train_end], peak_feat[:train_end], 
+    xgb_da = XGBImputer(window_size=6, output_size=4, n_estimators=100, max_depth=6)
+    xgb_da.fit(train_missing, train_mask, 
+               features_df=features_df_da.iloc[:train_end].reset_index(drop=True),
                original=train_data)
     
     np.random.seed(123)
     test_missing, test_mask = generate_missing(test_data, missing_rate)
     
     results_da = {
-        '线性插值': {'filled': LinearImputer().impute(test_missing), 'rmse': 0},
-        'XGBoost': {'filled': xgb_da.impute(test_missing, test_hour, test_peak), 'rmse': 0}
+        '线性插值': {'filled': LinearImputer().impute(test_missing), 'rmse': 0, 'mae': 0, 'smape': 0},
+        'XGBoost': {'filled': xgb_da.impute(test_missing, test_features_da), 'rmse': 0, 'mae': 0, 'smape': 0}
     }
     
     for name in results_da:
-        results_da[name]['rmse'] = calc_rmse(test_data, results_da[name]['filled'], test_mask)
+        metrics = calc_metrics(test_data, results_da[name]['filled'], test_mask)
+        results_da[name].update(metrics)
     
     print_results(results_da, "日前价格")
     
@@ -373,7 +593,7 @@ def run_pipeline(missing_rate: float = 0.05):
     dayahead_filled_full = np.zeros(len(dayahead_data))
     dayahead_filled_full[:train_end] = xgb_da.impute(
         np.where(np.isnan(train_missing), np.nan, train_data), 
-        hour_feat[:train_end], peak_feat[:train_end]
+        features_df_da.iloc[:train_end].reset_index(drop=True)
     )[:train_end]
     dayahead_filled_full[train_end:val_end] = LinearImputer().impute(dayahead_data[train_end:val_end])
     dayahead_filled_full[val_end:] = results_da['XGBoost']['filled']
@@ -386,7 +606,10 @@ def run_pipeline(missing_rate: float = 0.05):
     df_filled = df_dayahead.copy()
     df_filled.loc[:, '日前价格_填充'] = dayahead_filled_full
     
-    hour_feat2, peak_feat2 = extract_features(df_filled)
+    # 提取增强特征
+    features_df_rt = extract_features(df_filled)
+    print(f"特征数量：{len(features_df_rt.columns)}")
+    
     realtime_data = df_filled[realtime_col].values.astype(float)
     dayahead_filled_feat = df_filled['日前价格_填充'].values.astype(float)
     
@@ -396,16 +619,15 @@ def run_pipeline(missing_rate: float = 0.05):
     
     train_rt = realtime_data[:train_end2]
     test_rt = realtime_data[val_end2:]
-    test_hour2 = hour_feat2[val_end2:]
-    test_peak2 = peak_feat2[val_end2:]
+    test_features_rt = features_df_rt.iloc[val_end2:].reset_index(drop=True)
     test_dayahead = dayahead_filled_feat[val_end2:]
     
     np.random.seed(42)
     train_rt_missing, train_rt_mask = generate_missing(train_rt, missing_rate)
     
-    xgb_rt = XGBImputer(window_size=48, output_size=24, n_estimators=100, max_depth=6)
+    xgb_rt = XGBImputer(window_size=6, output_size=12, n_estimators=100, max_depth=6)
     xgb_rt.fit(train_rt_missing, train_rt_mask,
-               hour_feat2[:train_end2], peak_feat2[:train_end2],
+               features_df=features_df_rt.iloc[:train_end2].reset_index(drop=True),
                dayahead_filled=dayahead_filled_feat[:train_end2],
                original=train_rt)
     
@@ -413,23 +635,29 @@ def run_pipeline(missing_rate: float = 0.05):
     test_rt_missing, test_rt_mask = generate_missing(test_rt, missing_rate)
     
     results_rt = {
-        '线性插值': {'filled': LinearImputer().impute(test_rt_missing), 'rmse': 0},
-        'XGBoost': {'filled': xgb_rt.impute(test_rt_missing, test_hour2, test_peak2, test_dayahead), 'rmse': 0}
+        '线性插值': {'filled': LinearImputer().impute(test_rt_missing), 'rmse': 0, 'mae': 0, 'smape': 0},
+        'XGBoost': {'filled': xgb_rt.impute(test_rt_missing, test_features_rt, test_dayahead), 'rmse': 0, 'mae': 0, 'smape': 0}
     }
     
     for name in results_rt:
-        results_rt[name]['rmse'] = calc_rmse(test_rt, results_rt[name]['filled'], test_rt_mask)
+        metrics = calc_metrics(test_rt, results_rt[name]['filled'], test_rt_mask)
+        results_rt[name].update(metrics)
     
     print_results(results_rt, "实时价格")
     
     print("\n" + "="*70)
     print("生成可视化")
     print("="*70)
+    
+    # 填充效果对比图
     plot_comparison(test_data, test_mask, results_da, "日前价格填充效果对比")
     plot_comparison(test_rt, test_rt_mask, results_rt, "实时价格填充效果对比（含日前价格特征）")
     
-    print("\n测试完成！")
-
+    # 特征重要性可视化
+    plot_feature_importance(xgb_da, "阶段1-日前价格填充", 
+                               os.path.join(os.path.dirname(__file__), 'feature_importance_dayahead.png'))
+    plot_feature_importance(xgb_rt, "阶段2-实时价格填充", 
+                               os.path.join(os.path.dirname(__file__), 'feature_importance_realtime.png'))   
 
 if __name__ == "__main__":
     run_pipeline()

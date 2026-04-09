@@ -69,7 +69,6 @@ class RandomForestModel(BaseModel):
         """
         self.model.fit(X, y, **kwargs)
         self.is_fitted = True
-        print(f"随机森林模型 {self.name} 训练完成")
         return self
     
     def predict(self, X) -> np.ndarray:
@@ -163,7 +162,6 @@ class GradientBoostingModel(BaseModel):
         """
         self.model.fit(X, y, **kwargs)
         self.is_fitted = True
-        print(f"梯度提升树模型 {self.name} 训练完成")
         return self
     
     def predict(self, X) -> np.ndarray:
@@ -258,7 +256,6 @@ if has_xgboost:
             """
             self.model.fit(X, y, **kwargs)
             self.is_fitted = True
-            print(f"XGBoost模型 {self.name} 训练完成")
             return self
         
         def predict(self, X) -> np.ndarray:
