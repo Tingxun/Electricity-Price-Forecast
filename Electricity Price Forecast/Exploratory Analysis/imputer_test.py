@@ -1,5 +1,5 @@
 """
-EDA3 - 缺失值填充方法性能对比测试（简化版）
+EDA3 - 缺失值填充方法性能对比测试
 测试流程：
 1. 截取日前价格最长连续片段，填充日前价格缺失值
 2. 使用日前价格作为特征填充实时价格缺失值
@@ -62,19 +62,21 @@ def extract_features(df: pd.DataFrame) -> pd.DataFrame:
     n = len(df)
     
     # 基础时间特征
-    features['is_peak'] = df['是否高峰时段'].values if '是否高峰时段' in df.columns else ((features['hour'] >= 8) & (features['hour'] <= 15)).astype(int)
-    features['day_of_week'] = df['星期'].values if '星期' in df.columns else np.zeros(n)
-    features['month'] = df['月'].values if '月' in df.columns else np.ones(n)
+    features['is_peak'] = df['是否高峰时段']
+    features['hour'] = df['小时']
+    features['is_weekend'] = df['是否周末']
+    features['month'] = df['月']
     
     # 周期性编码（正弦/余弦变换）
     features['hour_sin'] = np.sin(2 * np.pi * df['小时'] / 24)
     features['dow_cos'] = np.cos(2 * np.pi * df['星期'] / 7)
     
-    # 日前市场边界特征（不使用实时数据）
+    # 日前市场边界特征
+    features['新能源出力-日前'] = df['风电出力-日前'] + df['光伏出力-日前'] 
     dayahead_boundary_cols = [
         '系统负荷-日前',
-        '风电出力-日前',
-        '光伏出力-日前',
+        # '风电出力-日前',
+        # '光伏出力-日前',
         '水电出力-日前',
         '联络线计划-日前',
     ]
@@ -125,12 +127,15 @@ class LinearImputer:
 class XGBImputer:
     """XGBoost填充器"""
     def __init__(self, window_size: int = 48, output_size: int = 24,
-                 n_estimators: int = 100, max_depth: int = 6):
+                 n_estimators: int = 100, max_depth: int = 6,
+                 learning_rate: float = 0.1, subsample: float = 0.8):
         self.name = "XGBoost"
         self.window_size = window_size
         self.output_size = output_size
         self.n_estimators = n_estimators
         self.max_depth = max_depth
+        self.learning_rate = learning_rate
+        self.subsample = subsample
         self.models = []
         self.feature_names = None
         self.n_features = 0
@@ -215,8 +220,7 @@ class XGBImputer:
             return
         
         self.n_features = len(X_list[0][0])
-        print(f"  训练样本: {len(X_list[0])}, 输入维度: {self.n_features}")
-        print(f"  特征列表: {self.feature_names}")
+        # print(f"  训练样本: {len(X_list[0])}, 输入维度: {self.n_features}")
         
         self.models = []
         for j in range(self.output_size):
@@ -233,14 +237,15 @@ class XGBImputer:
                 multi_output=False,
                 n_estimators=self.n_estimators,
                 max_depth=self.max_depth,
-                learning_rate=0.1,
+                learning_rate=self.learning_rate,
+                subsample=self.subsample,
                 objective='reg:squarederror',
                 random_state=42,
                 n_jobs=-1
             )
             model.fit(X_train, y_train)
             self.models.append(model)
-        print(f"  XGBoost训练完成: {len(self.models)} 个模型")
+        # print(f"  XGBoost训练完成: {len(self.models)} 个模型")
     
     def get_feature_importance(self) -> np.ndarray:
         """获取平均特征重要性
@@ -533,18 +538,33 @@ class XGBImputerTuner:
         self.best_params = None
         self.best_score = float('inf')
         
-    def create_param_grid(self) -> list:
-        """创建参数网格（方案2：固定max_depth=6，避免过拟合）"""
-        param_grid = [
-            {'n_estimators': 100, 'max_depth': 6, 'learning_rate': 0.1},   # 基准配置
-            {'n_estimators': 200, 'max_depth': 6, 'learning_rate': 0.1},   # 更多树
-            {'n_estimators': 300, 'max_depth': 6, 'learning_rate': 0.1},   # 更多树
-            {'n_estimators': 100, 'max_depth': 6, 'learning_rate': 0.05},  # 更低学习率
-            {'n_estimators': 200, 'max_depth': 6, 'learning_rate': 0.05},  # 更多树+低学习率
-            {'n_estimators': 300, 'max_depth': 6, 'learning_rate': 0.05},  # 更多树+低学习率
-        ]
+    def create_param_grid(self) -> dict:
+        """创建参数网格
+        
+        Returns
+        -------
+        dict : 各参数的候选值列表
+        """
+        param_grid = {
+            'n_estimators': [100, 200, 300],
+            'max_depth': [4, 6, 8],
+            'learning_rate': [0.05, 0.1],
+            'subsample': [0.8, 1.0],
+        }
         
         return param_grid
+    
+    def _generate_combinations(self, param_grid: dict) -> list:
+        """从参数网格生成所有参数组合"""
+        import itertools
+        keys = list(param_grid.keys())
+        values = [param_grid[k] for k in keys]
+        
+        combinations = []
+        for combo in itertools.product(*values):
+            combinations.append(dict(zip(keys, combo)))
+        
+        return combinations
     
     def cross_validate(self, data: np.ndarray, missing_mask: np.ndarray,
                        features_df: pd.DataFrame, params: dict,
@@ -574,8 +594,10 @@ class XGBImputerTuner:
             imputer = XGBImputer(
                 window_size=self.window_size,
                 output_size=self.output_size,
-                n_estimators=params['n_estimators'],
-                max_depth=params['max_depth']
+                n_estimators=params.get('n_estimators', 100),
+                max_depth=params.get('max_depth', 6),
+                learning_rate=params.get('learning_rate', 0.1),
+                subsample=params.get('subsample', 0.8)
             )
             
             # 准备特征
@@ -606,12 +628,14 @@ class XGBImputerTuner:
     def tune(self, data: np.ndarray, features_df: pd.DataFrame = None,
              dayahead_filled: np.ndarray = None, verbose: bool = True) -> dict:
         """执行超参数调优"""
-        param_grid = self.create_param_grid()
-        
+        param_grid_dict = self.create_param_grid()
+        param_grid = self._generate_combinations(param_grid_dict)
+
         if verbose:
             print(f"\n{'='*70}")
             print(f"开始超参数调优（网格搜索+{self.n_splits}折交叉验证）")
             print(f"{'='*70}")
+            print(f"参数空间: {param_grid_dict}")
             print(f"参数组合数: {len(param_grid)}")
         
         # 生成缺失值掩码（用于训练）
@@ -652,165 +676,91 @@ class XGBImputerTuner:
 def run_pipeline(missing_rate: float = 0.2, tune_hyperparams: bool = True):
     """运行完整流程"""
     print("="*70)
-    print("缺失值填充性能对比测试（增强特征工程版）")
+    print("缺失值填充性能对比测试")
     print("="*70)
     
     df = load_data()
     print(f"\n数据加载完成：{df.shape}")
     
-    dayahead_col = [c for c in df.columns if '日前' in c and '价格' in c and '实时' not in c]
+    # 只使用实时价格列
     realtime_col = [c for c in df.columns if '实时' in c and '价格' in c]
     
-    if not dayahead_col or not realtime_col:
-        print("错误：未找到价格列")
-        return
+    if not realtime_col:
+        print("错误：未找到实时价格列")
+        return None
     
-    dayahead_col = dayahead_col[0]
     realtime_col = realtime_col[0]
-    print(f"日前价格列：{dayahead_col}")
     print(f"实时价格列：{realtime_col}")
     
-    # ==================== 阶段1：日前价格填充 ====================
-    print("\n" + "="*70)
-    print("阶段1：日前价格数据填充")
-    print("="*70)
+    # 查找实时价格最长连续段
+    df_realtime = find_longest_segment(df, realtime_col)
+    print(f"实时价格最长连续段：{len(df_realtime)}小时")
     
-    df_dayahead = find_longest_segment(df, dayahead_col)
-    print(f"日前价格最长连续段：{len(df_dayahead)}小时")
+    # 提取特征
+    features_df = extract_features(df_realtime)
+    print(f"特征数量：{len(features_df.columns)}")
+    print(f"特征列表：{list(features_df.columns)}")
     
-    # 提取增强特征
-    features_df_da = extract_features(df_dayahead)
-    print(f"特征数量：{len(features_df_da.columns)}")
-    print(f"特征列表：{list(features_df_da.columns)}")
+    realtime_data = df_realtime[realtime_col].values.astype(float)
     
-    dayahead_data = df_dayahead[dayahead_col].values.astype(float)
-    
-    n = len(dayahead_data)
+    n = len(realtime_data)
     train_end = int(n * 0.6)
     val_end = int(n * 0.8)
     
-    train_data = dayahead_data[:train_end]
-    test_data = dayahead_data[val_end:]
-    test_features_da = features_df_da.iloc[val_end:].reset_index(drop=True)
+    train_data = realtime_data[:train_end]
+    test_data = realtime_data[val_end:]
+    test_features = features_df.iloc[val_end:].reset_index(drop=True)
     
     np.random.seed(42)
     train_missing, train_mask = generate_missing(train_data, missing_rate)
     
-    # 超参数调优（阶段1）
+    # 超参数调优
     if tune_hyperparams:
-        tuner_da = XGBImputerTuner(window_size=6, output_size=4, n_splits=3)
-        best_params_da = tuner_da.tune(train_data, 
-                                       features_df_da.iloc[:train_end].reset_index(drop=True),
-                                       verbose=True)
-        print(f"\n阶段1使用调优参数: {best_params_da}")
+        tuner = XGBImputerTuner(window_size=12, output_size=24, n_splits=3)
+        best_params = tuner.tune(train_data,
+                                 features_df.iloc[:train_end].reset_index(drop=True),
+                                 verbose=True)
+        print(f"\n使用调优参数: {best_params}")
     else:
-        best_params_da = {'n_estimators': 100, 'max_depth': 6, 'learning_rate': 0.1}
+        best_params = {'n_estimators': 100, 'max_depth': 4, 'learning_rate': 0.05, 'subsample': 0.8}
+
+    # 训练XGBoost填充器
+    xgb_imputer = XGBImputer(window_size=12, output_size=24,
+                             n_estimators=best_params.get('n_estimators', 100),
+                             max_depth=best_params.get('max_depth', 4),
+                             learning_rate=best_params.get('learning_rate', 0.05),
+                             subsample=best_params.get('subsample', 0.8))
+    xgb_imputer.fit(train_missing, train_mask, 
+                    features_df=features_df.iloc[:train_end].reset_index(drop=True),
+                    original=train_data)
     
-    xgb_da = XGBImputer(window_size=6, output_size=4, 
-                        n_estimators=best_params_da['n_estimators'],
-                        max_depth=best_params_da['max_depth'])
-    xgb_da.fit(train_missing, train_mask, 
-               features_df=features_df_da.iloc[:train_end].reset_index(drop=True),
-               original=train_data)
-    
+    # 测试
     np.random.seed(123)
     test_missing, test_mask = generate_missing(test_data, missing_rate)
     
-    results_da = {
+    results = {
         '线性插值': {'filled': LinearImputer().impute(test_missing), 'rmse': 0, 'mae': 0, 'smape': 0},
-        'XGBoost': {'filled': xgb_da.impute(test_missing, test_features_da), 'rmse': 0, 'mae': 0, 'smape': 0}
+        'XGBoost': {'filled': xgb_imputer.impute(test_missing, test_features), 'rmse': 0, 'mae': 0, 'smape': 0}
     }
     
-    for name in results_da:
-        metrics = calc_metrics(test_data, results_da[name]['filled'], test_mask)
-        results_da[name].update(metrics)
+    for name in results:
+        metrics = calc_metrics(test_data, results[name]['filled'], test_mask)
+        results[name].update(metrics)
     
-    print_results(results_da, "日前价格")
-    
-    # 保存填充后的日前价格
-    dayahead_filled_full = np.zeros(len(dayahead_data))
-    dayahead_filled_full[:train_end] = xgb_da.impute(
-        np.where(np.isnan(train_missing), np.nan, train_data), 
-        features_df_da.iloc[:train_end].reset_index(drop=True)
-    )[:train_end]
-    dayahead_filled_full[train_end:val_end] = LinearImputer().impute(dayahead_data[train_end:val_end])
-    dayahead_filled_full[val_end:] = results_da['XGBoost']['filled']
-    
-    # ==================== 阶段2：实时价格填充 ====================
-    print("\n" + "="*70)
-    print("阶段2：实时价格数据填充（使用日前价格作为特征）")
-    print("="*70)
-    
-    df_filled = df_dayahead.copy()
-    df_filled.loc[:, '日前价格_填充'] = dayahead_filled_full
-    
-    # 提取增强特征
-    features_df_rt = extract_features(df_filled)
-    print(f"特征数量：{len(features_df_rt.columns)}")
-    
-    realtime_data = df_filled[realtime_col].values.astype(float)
-    dayahead_filled_feat = df_filled['日前价格_填充'].values.astype(float)
-    
-    n2 = len(realtime_data)
-    train_end2 = int(n2 * 0.6)
-    val_end2 = int(n2 * 0.8)
-    
-    train_rt = realtime_data[:train_end2]
-    test_rt = realtime_data[val_end2:]
-    test_features_rt = features_df_rt.iloc[val_end2:].reset_index(drop=True)
-    test_dayahead = dayahead_filled_feat[val_end2:]
-    
-    np.random.seed(42)
-    train_rt_missing, train_rt_mask = generate_missing(train_rt, missing_rate)
-    
-    # 超参数调优（阶段2）
-    if tune_hyperparams:
-        tuner_rt = XGBImputerTuner(window_size=6, output_size=12, n_splits=3)
-        best_params_rt = tuner_rt.tune(train_rt, 
-                                       features_df_rt.iloc[:train_end2].reset_index(drop=True),
-                                       dayahead_filled=dayahead_filled_feat[:train_end2],
-                                       verbose=True)
-        print(f"\n阶段2使用调优参数: {best_params_rt}")
-    else:
-        best_params_rt = {'n_estimators': 100, 'max_depth': 6, 'learning_rate': 0.1}
-    
-    xgb_rt = XGBImputer(window_size=6, output_size=12, 
-                        n_estimators=best_params_rt['n_estimators'],
-                        max_depth=best_params_rt['max_depth'])
-    xgb_rt.fit(train_rt_missing, train_rt_mask,
-               features_df=features_df_rt.iloc[:train_end2].reset_index(drop=True),
-               dayahead_filled=dayahead_filled_feat[:train_end2],
-               original=train_rt)
-    
-    np.random.seed(123)
-    test_rt_missing, test_rt_mask = generate_missing(test_rt, missing_rate)
-    
-    results_rt = {
-        '线性插值': {'filled': LinearImputer().impute(test_rt_missing), 'rmse': 0, 'mae': 0, 'smape': 0},
-        'XGBoost': {'filled': xgb_rt.impute(test_rt_missing, test_features_rt, test_dayahead), 'rmse': 0, 'mae': 0, 'smape': 0}
-    }
-    
-    for name in results_rt:
-        metrics = calc_metrics(test_rt, results_rt[name]['filled'], test_rt_mask)
-        results_rt[name].update(metrics)
-    
-    print_results(results_rt, "实时价格")
+    print_results(results, "实时价格")
     
     print("\n" + "="*70)
     print("生成可视化")
     print("="*70)
     
     # 填充效果对比图
-    plot_comparison(test_data, test_mask, results_da, "日前价格填充效果对比")
-    plot_comparison(test_rt, test_rt_mask, results_rt, "实时价格填充效果对比（含日前价格特征）")
+    plot_comparison(test_data, test_mask, results, "实时价格填充效果对比")
     
     # 特征重要性可视化
-    plot_feature_importance(xgb_da, "阶段1-日前价格填充", 
-                               os.path.join(os.path.dirname(__file__), 'feature_importance_dayahead.png'))
-    plot_feature_importance(xgb_rt, "阶段2-实时价格填充", 
-                               os.path.join(os.path.dirname(__file__), 'feature_importance_realtime.png'))
+    plot_feature_importance(xgb_imputer, "实时价格填充", 
+                            os.path.join(os.path.dirname(__file__), 'feature_importance_realtime.png'))
     
-    return results_da, results_rt
+    return results
 
 
 def run_multi_missing_rate_experiment(missing_rates: list = None, tune_hyperparams: bool = True):
@@ -827,14 +777,13 @@ def run_multi_missing_rate_experiment(missing_rates: list = None, tune_hyperpara
         missing_rates = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
     
     print("\n" + "="*80)
-    print("多缺失率实验")
+    print("多缺失率实验（实时电价单阶段填充）")
     print("="*80)
     print(f"缺失率列表: {missing_rates}")
     
-    # 存储结果
+    # 存储结果（仅实时电价）
     results = {
         'missing_rates': missing_rates,
-        'dayahead': {'XGBoost': {'rmse': [], 'mae': []}, '线性插值': {'rmse': [], 'mae': []}},
         'realtime': {'XGBoost': {'rmse': [], 'mae': []}, '线性插值': {'rmse': [], 'mae': []}}
     }
     
@@ -844,12 +793,14 @@ def run_multi_missing_rate_experiment(missing_rates: list = None, tune_hyperpara
         print(f"{'='*80}")
         
         # 运行单次实验
-        results_da, results_rt = run_pipeline(missing_rate=mr, tune_hyperparams=tune_hyperparams)
+        results_rt = run_pipeline(missing_rate=mr, tune_hyperparams=tune_hyperparams)
+        
+        if results_rt is None:
+            print("  警告：实验失败，跳过")
+            continue
         
         # 记录结果
         for method in ['XGBoost', '线性插值']:
-            results['dayahead'][method]['rmse'].append(results_da[method]['rmse'])
-            results['dayahead'][method]['mae'].append(results_da[method]['mae'])
             results['realtime'][method]['rmse'].append(results_rt[method]['rmse'])
             results['realtime'][method]['mae'].append(results_rt[method]['mae'])
     
@@ -860,7 +811,7 @@ def run_multi_missing_rate_experiment(missing_rates: list = None, tune_hyperpara
 
 
 def plot_comprehensive_evaluation(results: dict, save_path: str = None):
-    """绘制综合评估大图（4幅子图）
+    """绘制综合评估大图（2幅子图：实时电价RMSE和MAE）
     
     Parameters
     ----------
@@ -871,69 +822,37 @@ def plot_comprehensive_evaluation(results: dict, save_path: str = None):
     """
     missing_rates = results['missing_rates']
     
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle('缺失值填充性能综合评估', fontsize=16, fontweight='bold')
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig.suptitle('实时电价缺失值填充性能综合评估', fontsize=16, fontweight='bold')
     
     # 颜色配置
     colors = {'XGBoost': '#2E86AB', '线性插值': '#A23B72'}
     markers = {'XGBoost': 'o', '线性插值': 's'}
     
-    # 子图1: 日前价格 - RMSE
-    ax1 = axes[0, 0]
+    # 子图1: 实时价格 - RMSE
+    ax1 = axes[0]
     for method in ['XGBoost', '线性插值']:
-        ax1.plot(missing_rates, results['dayahead'][method]['rmse'], 
+        ax1.plot(missing_rates, results['realtime'][method]['rmse'], 
                 marker=markers[method], color=colors[method], 
                 linewidth=2, markersize=8, label=method)
     ax1.set_xlabel('缺失率', fontsize=12)
     ax1.set_ylabel('RMSE', fontsize=12)
-    ax1.set_title('日前价格 - RMSE', fontsize=13, fontweight='bold')
+    ax1.set_title('实时电价 - RMSE', fontsize=13, fontweight='bold')
     ax1.legend(fontsize=10)
     ax1.grid(True, alpha=0.3)
     ax1.set_xticks(missing_rates)
     ax1.set_xticklabels([f'{mr*100:.0f}%' for mr in missing_rates])
     
-    # 子图2: 日前价格 - MAE
-    ax2 = axes[0, 1]
+    # 子图2: 实时价格 - MAE
+    ax2 = axes[1]
     for method in ['XGBoost', '线性插值']:
-        ax2.plot(missing_rates, results['dayahead'][method]['mae'], 
+        ax2.plot(missing_rates, results['realtime'][method]['mae'], 
                 marker=markers[method], color=colors[method], 
                 linewidth=2, markersize=8, label=method)
     ax2.set_xlabel('缺失率', fontsize=12)
     ax2.set_ylabel('MAE', fontsize=12)
-    ax2.set_title('日前价格 - MAE', fontsize=13, fontweight='bold')
+    ax2.set_title('实时电价 - MAE', fontsize=13, fontweight='bold')
     ax2.legend(fontsize=10)
-    ax2.grid(True, alpha=0.3)
-    ax2.set_xticks(missing_rates)
-    ax2.set_xticklabels([f'{mr*100:.0f}%' for mr in missing_rates])
-    
-    # 子图3: 实时价格 - RMSE
-    ax3 = axes[1, 0]
-    for method in ['XGBoost', '线性插值']:
-        ax3.plot(missing_rates, results['realtime'][method]['rmse'], 
-                marker=markers[method], color=colors[method], 
-                linewidth=2, markersize=8, label=method)
-    ax3.set_xlabel('缺失率', fontsize=12)
-    ax3.set_ylabel('RMSE', fontsize=12)
-    ax3.set_title('实时价格 - RMSE', fontsize=13, fontweight='bold')
-    ax3.legend(fontsize=10)
-    ax3.grid(True, alpha=0.3)
-    ax3.set_xticks(missing_rates)
-    ax3.set_xticklabels([f'{mr*100:.0f}%' for mr in missing_rates])
-    
-    # 子图4: 实时价格 - MAE
-    ax4 = axes[1, 1]
-    for method in ['XGBoost', '线性插值']:
-        ax4.plot(missing_rates, results['realtime'][method]['mae'], 
-                marker=markers[method], color=colors[method], 
-                linewidth=2, markersize=8, label=method)
-    ax4.set_xlabel('缺失率', fontsize=12)
-    ax4.set_ylabel('MAE', fontsize=12)
-    ax4.set_title('实时价格 - MAE', fontsize=13, fontweight='bold')
-    ax4.legend(fontsize=10)
-    ax4.grid(True, alpha=0.3)
-    ax4.set_xticks(missing_rates)
-    ax4.set_xticklabels([f'{mr*100:.0f}%' for mr in missing_rates])
-    
     plt.tight_layout()
     
     if save_path is None:
@@ -948,17 +867,7 @@ def plot_comprehensive_evaluation(results: dict, save_path: str = None):
     print("多缺失率实验结果汇总")
     print("="*80)
     
-    print("\n【日前价格】")
-    print(f"{'缺失率':<10} {'XGBoost RMSE':<15} {'线性插值 RMSE':<15} {'XGBoost MAE':<15} {'线性插值 MAE':<15}")
-    print("-"*70)
-    for i, mr in enumerate(missing_rates):
-        print(f"{mr*100:>6.0f}%    "
-              f"{results['dayahead']['XGBoost']['rmse'][i]:<14.2f} "
-              f"{results['dayahead']['线性插值']['rmse'][i]:<14.2f} "
-              f"{results['dayahead']['XGBoost']['mae'][i]:<14.2f} "
-              f"{results['dayahead']['线性插值']['mae'][i]:<14.2f}")
-    
-    print("\n【实时价格】")
+    print("\n【实时电价】")
     print(f"{'缺失率':<10} {'XGBoost RMSE':<15} {'线性插值 RMSE':<15} {'XGBoost MAE':<15} {'线性插值 MAE':<15}")
     print("-"*70)
     for i, mr in enumerate(missing_rates):
@@ -971,4 +880,6 @@ def plot_comprehensive_evaluation(results: dict, save_path: str = None):
 
 if __name__ == "__main__":
     # 运行多缺失率实验
-    run_multi_missing_rate_experiment(tune_hyperparams=True)
+    # run_multi_missing_rate_experiment(tune_hyperparams=False)
+    # 运行单次实验
+    run_pipeline(missing_rate=0.2, tune_hyperparams=False)
