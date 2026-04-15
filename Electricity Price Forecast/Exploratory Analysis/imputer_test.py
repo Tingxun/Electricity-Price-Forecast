@@ -117,8 +117,11 @@ def extract_weather_features(weather_df: pd.DataFrame) -> pd.DataFrame:
     return features
 
 
-def extract_features(df: pd.DataFrame) -> pd.DataFrame:
-    """提取增强特征"""
+def extract_static_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    提取静态特征
+    静态特征：预测哪一步直接使用哪一步对应的特征，在模型外进行处理
+    """
     features = pd.DataFrame(index=df.index)
     
     # 基础时间特征
@@ -152,6 +155,87 @@ def extract_features(df: pd.DataFrame) -> pd.DataFrame:
     
     return features
 
+
+def extract_dynamic_features(filled_data: np.ndarray, window_size: int, 
+                             target_idx: int) -> np.ndarray:
+    """
+    提取动态特征（实时价格滞后特征 + 滚动特征 + 差分特征）
+    动态特征：预测T步时使用T-1到T-window_size的历史滞后，历史滞后随着填充轮次变化
+    
+    包含的特征：
+    1. 原始滞后特征: [price_t-window_size, ..., price_t-1]
+    2. 滚动统计特征: mean, std, min, max, median
+    3. 差分特征: 一阶差分、二阶差分
+    
+    Args:
+        filled_data: 已填充的数据（包含已填充的部分）
+        window_size: 滞后窗口大小
+        target_idx: 当前预测目标的时间索引
+        
+    Returns:
+        动态特征数组（包含滞后、滚动统计、差分特征）
+    """
+    if target_idx >= window_size:
+        # 正常情况：有足够的历史数据
+        window = filled_data[target_idx - window_size:target_idx]
+    else:
+        # 边界情况：历史数据不足，使用边缘填充
+        window = np.pad(filled_data[:target_idx], (window_size - target_idx, 0), mode='edge')
+    
+    # 对窗口中的缺失值进行线性插值（以防万一）
+    window = pd.Series(window).interpolate().values
+    
+    features = []
+    
+    # 1. 原始滞后特征
+    features.extend(window)
+    
+    # 2. 滚动统计特征（使用不同窗口大小）
+    window_series = pd.Series(window)
+    
+    # 短窗口滚动特征（最近6小时）
+    short_window = min(6, window_size)
+    short_data = window[-short_window:]
+    features.append(np.mean(short_data))  # 短窗口均值
+    features.append(np.std(short_data) if len(short_data) > 1 else 0)  # 短窗口标准差
+    features.append(np.min(short_data))  # 短窗口最小值
+    features.append(np.max(short_data))  # 短窗口最大值
+    
+    # 中窗口滚动特征（最近12小时）
+    mid_window = min(12, window_size)
+    mid_data = window[-mid_window:]
+    features.append(np.mean(mid_data))  # 中窗口均值
+    features.append(np.std(mid_data) if len(mid_data) > 1 else 0)  # 中窗口标准差
+    
+    # 长窗口滚动特征（整个窗口）
+    features.append(np.mean(window))  # 长窗口均值
+    features.append(np.std(window) if len(window) > 1 else 0)  # 长窗口标准差
+    features.append(np.median(window))  # 长窗口中位数
+    
+    # 3. 差分特征
+    # 一阶差分（最近值与窗口均值的差）
+    first_diff = window[-1] - window[-2] if len(window) >= 2 else 0
+    features.append(first_diff)
+    
+    # 与窗口均值的差
+    mean_diff = window[-1] - np.mean(window)
+    features.append(mean_diff)
+    
+    # 与窗口最大/最小值的差
+    max_diff = window[-1] - np.max(window)
+    min_diff = window[-1] - np.min(window)
+    features.append(max_diff)
+    features.append(min_diff)
+    
+    # 4. 趋势特征（线性回归斜率）
+    if len(window) >= 3:
+        x = np.arange(len(window))
+        slope = np.polyfit(x, window, 1)[0] if np.std(window) > 0 else 0
+        features.append(slope)
+    else:
+        features.append(0)
+    
+    return np.array(features, dtype=np.float32)
 
 def generate_missing(data: np.ndarray, missing_rate: float = 0.2, 
                      min_gap: int = 24, max_gap: int = 48) -> Tuple[np.ndarray, np.ndarray]:
@@ -247,6 +331,94 @@ class LightGBMImputerMultiOutput:
         self.model = None
         self.feature_names = None
         self.n_features = 0
+        self.static_feature_cols = None  # 存储静态特征列名
+    
+    def _build_feature_vector(self, filled_data: np.ndarray, 
+                              static_features_df: pd.DataFrame = None,
+                              target_start_idx: int = 0) -> np.ndarray:
+        """
+        构建特征向量 - 统一训练和预测的特征工程流程
+        
+        特征组成：
+        1. 动态特征：使用T-1到T-window_size的历史滞后
+        2. 静态特征：预测哪一步直接使用哪一步对应的特征
+        
+        Args:
+            filled_data: 已填充的价格数据
+            static_features_df: 静态特征DataFrame
+            target_start_idx: 预测目标的起始索引
+            
+        Returns:
+            特征向量
+        """
+        # 提取动态特征
+        dynamic_features = extract_dynamic_features(
+            filled_data, self.window_size, target_start_idx
+        )
+        
+        # 提取静态特征
+        static_features = []
+        if static_features_df is not None:
+            for j in range(self.output_size):
+                feat_pos = min(target_start_idx + j, len(static_features_df) - 1)
+                static_features.extend(static_features_df.iloc[feat_pos].values)
+        else:
+            # 回退：使用时间特征
+            for j in range(self.output_size):
+                hour = (target_start_idx + j) % 24
+                peak = 1 if 8 <= hour <= 15 else 0
+                static_features.extend([hour, peak])
+        
+        # 合并动态特征和静态特征
+        feature_vector = np.concatenate([dynamic_features, static_features])
+        
+        return feature_vector
+    
+    def _build_feature_names(self, static_features_df: pd.DataFrame = None):
+        """构建特征名称列表"""
+        feature_names = []
+        
+        # 动态特征名称
+        # 1. 原始滞后特征
+        for i in range(self.window_size):
+            feature_names.append(f'price_lag_{self.window_size - i}')
+        
+        # 2. 滚动统计特征（短窗口6小时）
+        feature_names.extend([
+            'rolling_mean_6h', 'rolling_std_6h', 'rolling_min_6h', 'rolling_max_6h'
+        ])
+        
+        # 3. 滚动统计特征（中窗口12小时）
+        feature_names.extend([
+            'rolling_mean_12h', 'rolling_std_12h'
+        ])
+        
+        # 4. 滚动统计特征（长窗口）
+        feature_names.extend([
+            'rolling_mean_full', 'rolling_std_full', 'rolling_median_full'
+        ])
+        
+        # 5. 差分特征
+        feature_names.extend([
+            'diff_1st',           # 一阶差分
+            'diff_from_mean',     # 与均值差
+            'diff_from_max',      # 与最大值差
+            'diff_from_min',      # 与最小值差
+            'trend_slope'         # 趋势斜率
+        ])
+        
+        # 静态特征名称
+        if static_features_df is not None:
+            static_cols = static_features_df.columns.tolist()
+            for j in range(self.output_size):
+                for col in static_cols:
+                    feature_names.append(f'{col}_t+{j}')
+            self.static_feature_cols = static_cols
+        else:
+            for j in range(self.output_size):
+                feature_names.extend([f'hour_t+{j}', f'is_peak_t+{j}'])
+        
+        self.feature_names = feature_names
     
     def fit(self, data: np.ndarray, missing_mask: np.ndarray,
             features_df: pd.DataFrame = None, original: np.ndarray = None):
@@ -271,15 +443,8 @@ class LightGBMImputerMultiOutput:
         X_list = []
         y_list = []
 
-        # 构建特征名称列表
-        base_feature_names = [f'price_t-{self.window_size-i}' for i in range(self.window_size)]
-        if features_df is not None:
-            for j in range(self.output_size):
-                base_feature_names.extend([f'{col}_t+{j}' for col in features_df.columns])
-        else:
-            for j in range(self.output_size):
-                base_feature_names.extend([f'hour_t+{j}', f'is_peak_t+{j}'])
-        self.feature_names = base_feature_names
+        # 构建特征名称
+        self._build_feature_names(features_df)
 
         # 构建训练样本
         n_samples = len(data)
@@ -293,21 +458,8 @@ class LightGBMImputerMultiOutput:
                     skipped += 1
                     continue
 
-            # 历史价格窗口
-            price_hist = input_data[idx:end_idx]
-
-            # 所有时间步的增强特征
-            other_features = []
-            if features_df is not None:
-                for j in range(self.output_size):
-                    other_features.extend(features_df.iloc[end_idx + j].values)
-            else:
-                for j in range(self.output_size):
-                    hour = (end_idx + j) % 24
-                    peak = 1 if 8 <= hour <= 15 else 0
-                    other_features.extend([hour, peak])
-
-            X = np.concatenate([price_hist, other_features])
+            # 使用统一的特征工程方法构建特征向量
+            X = self._build_feature_vector(input_data, features_df, end_idx)
             X_list.append(X)
             y_list.append(target[end_idx:target_end])
 
@@ -385,26 +537,9 @@ class LightGBMImputerMultiOutput:
             while pos < end_pos:
                 predict_len = min(self.output_size, end_pos - pos)
                 
-                if pos >= self.window_size:
-                    window = filled[pos - self.window_size:pos]
-                else:
-                    window = np.pad(filled[:pos], (self.window_size - pos, 0), mode='edge')
-                
-                window = pd.Series(window).interpolate().values
-                
-                # 构建增强特征
-                other_features = []
-                if features_df is not None:
-                    for j in range(self.output_size):
-                        feat_pos = min(pos + j, len(features_df) - 1)
-                        other_features.extend(features_df.iloc[feat_pos].values)
-                else:
-                    for j in range(self.output_size):
-                        hour = (pos + j) % 24
-                        peak = 1 if 8 <= hour <= 15 else 0
-                        other_features.extend([hour, peak])
-                
-                X = np.concatenate([window, other_features]).reshape(1, -1)
+                # 使用统一的特征工程方法构建特征向量
+                X = self._build_feature_vector(filled, features_df, pos)
+                X = X.reshape(1, -1)
                 
                 # 多输出预测
                 preds = self.model.predict(X)[0][:predict_len]
@@ -585,7 +720,7 @@ def run_pipeline(missing_rate: float = 0.2):
     print(f"实时价格最长连续段：{len(df_realtime)}小时")
     
     # 提取特征
-    features_df = extract_features(df_realtime)
+    features_df = extract_static_features(df_realtime)
     print(f"特征数量：{len(features_df.columns)}")
     print(f"特征列表：{list(features_df.columns)}")
     
@@ -765,7 +900,7 @@ def plot_comprehensive_evaluation(results: dict, save_path: str = None):
 
 if __name__ == "__main__":
     # 运行单次实验
-    # run_pipeline(missing_rate=0.2)
+    run_pipeline(missing_rate=0.2)
     
     # 运行多缺失率实验
-    run_multi_missing_rate_experiment()
+    # run_multi_missing_rate_experiment()
