@@ -1,16 +1,16 @@
 """
-EDA3 - 缺失值填充方法性能对比测试
+缺失值填充方法性能对比测试
 测试流程：
-1. 截取日前价格最长连续片段，填充日前价格缺失值
-2. 使用日前价格作为特征填充实时价格缺失值
-3. 对比线性插值、XGBoost的填充效果
-"""
+1. 截取实时价格最长连续片段
+2. 对比线性插值、LightGBM的填充效果
+n"""
 
 import os
 import sys
 import numpy as np
 import pandas as pd
 import matplotlib
+matplotlib.use('Agg')  
 import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Dict, Tuple
@@ -25,13 +25,47 @@ warnings.filterwarnings('ignore')
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def load_data(data_path: str = None) -> pd.DataFrame:
-    """加载数据"""
-    if data_path is None:
-        data_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'raw', '市场边界_出清价格总表.csv')
-    df = pd.read_csv(data_path)
-    df['datetime'] = pd.to_datetime(df['时间戳'].str.split('_').str[0])
-    return df
+def load_data():
+    """加载并合并市场边界数据和气象数据"""
+    market_data_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'processed', 'processed_市场总表.csv')
+    weather_data_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'processed', 'processed_气象总表.csv')
+    
+    # 加载市场边界数据
+    market_df = pd.read_csv(market_data_path)
+    market_df['datetime'] = pd.to_datetime(market_df['时间戳'].str.split('_').str[0])
+    
+    # 加载气象数据
+    weather_df = pd.read_csv(weather_data_path)
+    
+    # 处理24:00时间格式问题
+    def parse_datetime(date_str, time_str):
+        if time_str == '24:00':
+            dt = pd.to_datetime(date_str) + pd.Timedelta(days=1)
+            return dt
+        else:
+            return pd.to_datetime(date_str + ' ' + time_str)
+    
+    weather_df['datetime'] = weather_df.apply(
+        lambda row: parse_datetime(row['日期'], row['时段']), 
+        axis=1
+    )
+    
+    # 提取气象特征
+    weather_features = extract_weather_features(weather_df)
+    
+    # 合并气象特征到气象数据框
+    weather_df_with_features = weather_df[['datetime']].copy()
+    weather_df_with_features = pd.concat([weather_df_with_features, weather_features], axis=1)
+    
+    # 合并市场数据和气象数据（按datetime）
+    merged_df = market_df.merge(weather_df_with_features, on='datetime', how='left')
+    
+    print(f"市场边界数据：{market_df.shape}")
+    print(f"气象数据：{weather_df.shape}")
+    print(f"合并后数据：{merged_df.shape}")
+    print(f"已添加气象特征：{len(weather_features.columns)} 个")
+    
+    return merged_df
 
 
 def find_longest_segment(data: pd.DataFrame, target_col: str) -> pd.DataFrame:
@@ -56,10 +90,36 @@ def find_longest_segment(data: pd.DataFrame, target_col: str) -> pd.DataFrame:
     return data.iloc[longest[0]:longest[1]].copy()
 
 
+def extract_weather_features(weather_df: pd.DataFrame) -> pd.DataFrame:
+    """提取气象特征"""
+    features = pd.DataFrame(index=weather_df.index)
+    
+    # 获取所有列（排除日期、时段、datetime）
+    weather_cols = [col for col in weather_df.columns if col not in ['日期', '时段', 'datetime']]
+    
+    # 按城市聚合气象特征
+    cities = ['孝感市', '宜昌市', '武汉市', '荆州市', '荆门市', '襄阳市', '黄冈市', '随州市']
+    
+    for city in cities:
+        city_cols = [col for col in weather_cols if col.startswith(city)]
+        if not city_cols:
+            continue
+        
+        # 对每种特征类型，保留所有数据源作为独立特征
+        feature_types = ['温度', '风速', '总云量', '相对湿度', '压强', '辐照度', '降雨量']
+        
+        for feature_type in feature_types:
+            type_cols = [col for col in city_cols if feature_type in col]
+            for col in type_cols:
+                # 保留原始列名作为特征名（简化名称）
+                features[col] = weather_df[col].values
+    
+    return features
+
+
 def extract_features(df: pd.DataFrame) -> pd.DataFrame:
-    """提取增强特征（不使用实时数据）"""
+    """提取增强特征"""
     features = pd.DataFrame(index=df.index)
-    n = len(df)
     
     # 基础时间特征
     features['is_peak'] = df['是否高峰时段']
@@ -71,18 +131,24 @@ def extract_features(df: pd.DataFrame) -> pd.DataFrame:
     features['hour_sin'] = np.sin(2 * np.pi * df['小时'] / 24)
     features['dow_cos'] = np.cos(2 * np.pi * df['星期'] / 7)
     
-    # 日前市场边界特征
-    features['新能源出力-日前'] = df['风电出力-日前'] + df['光伏出力-日前'] 
+    # 市场边界特征
     dayahead_boundary_cols = [
-        '系统负荷-日前',
-        # '风电出力-日前',
-        # '光伏出力-日前',
-        '水电出力-日前',
-        '联络线计划-日前',
+        '系统负荷-实时',
+        '风电出力-实时',
+        '光伏出力-实时',
+        '水电出力-实时',
+        '联络线计划-实时',
     ]
     for col in dayahead_boundary_cols:
         if col in df.columns:
             features[col] = df[col].values
+    
+    # 添加气象特征（以下划线分隔的列名）
+    cities = ['孝感市', '宜昌市', '武汉市', '荆州市', '荆门市', '襄阳市', '黄冈市', '恩施州', '十堰市', '黄石市', '咸宁市', '随州市']
+    weather_cols = [col for col in df.columns if any(col.startswith(city.replace('-', '_')) for city in cities)]
+    
+    # for col in weather_cols:
+    #     features[col] = df[col].values
     
     return features
 
@@ -124,170 +190,176 @@ class LinearImputer:
         return pd.Series(data).interpolate(method='linear').values
 
 
-class XGBImputer:
-    """XGBoost填充器"""
+class FeaturePreprocessor:
+    """特征预处理器：线性插值填充缺失值"""
+    
+    def __init__(self):
+        self.feature_cols = None
+    
+    def fit_transform(self, features_df: pd.DataFrame) -> pd.DataFrame:
+        """拟合并转换训练集特征"""
+        df = features_df.copy()
+        self.feature_cols = df.columns.tolist()
+        
+        # 线性插值填充缺失值
+        for col in df.columns:
+            if df[col].isna().any():
+                df[col] = df[col].interpolate(method='linear')
+                df[col] = df[col].fillna(method='bfill').fillna(method='ffill')
+        
+        return df
+    
+    def transform(self, features_df: pd.DataFrame) -> pd.DataFrame:
+        """转换测试集特征"""
+        df = features_df.copy()
+        
+        for col in df.columns:
+            if df[col].isna().any():
+                df[col] = df[col].interpolate(method='linear')
+                df[col] = df[col].fillna(method='bfill').fillna(method='ffill')
+        
+        return df
+
+
+class LightGBMImputerMultiOutput:
+    """LightGBM多输出填充器"""
     def __init__(self, window_size: int = 48, output_size: int = 24,
                  n_estimators: int = 100, max_depth: int = 6,
-                 learning_rate: float = 0.1, subsample: float = 0.8):
-        self.name = "XGBoost"
+                 learning_rate: float = 0.1, subsample: float = 0.8,
+                 colsample_bytree: float = 0.8, reg_alpha: float = 0.0,
+                 reg_lambda: float = 1.0, num_leaves: int = 31, 
+                 feature_fraction: float = 0.8, bagging_fraction: float = 0.8, 
+                 bagging_freq: int = 5):
+        self.name = "LightGBM"
         self.window_size = window_size
         self.output_size = output_size
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.learning_rate = learning_rate
         self.subsample = subsample
-        self.models = []
+        self.colsample_bytree = colsample_bytree
+        self.reg_alpha = reg_alpha
+        self.reg_lambda = reg_lambda
+        self.num_leaves = num_leaves
+        self.feature_fraction = feature_fraction
+        self.bagging_fraction = bagging_fraction
+        self.bagging_freq = bagging_freq
+        self.model = None
         self.feature_names = None
         self.n_features = 0
     
     def fit(self, data: np.ndarray, missing_mask: np.ndarray,
-            features_df: pd.DataFrame = None, dayahead_filled: np.ndarray = None,
-            original: np.ndarray = None):
-        """训练XGBoost模型
-        
-        Parameters
-        ----------
-        data : np.ndarray
-            含缺失值的数据
-        missing_mask : np.ndarray
-            缺失值掩码
-        features_df : pd.DataFrame
-            特征DataFrame（包含时间特征、市场边界特征等）
-        dayahead_filled : np.ndarray
-            填充后的日前价格（用于实时价格填充）
-        original : np.ndarray
-            原始完整数据（用于训练）
-        """
+            features_df: pd.DataFrame = None, original: np.ndarray = None):
+        """训练多输出LightGBM模型"""
         try:
-            from models.tree_models import XGBoostModel, has_xgboost
-            if not has_xgboost:
-                print("  警告：XGBoost不可用")
-                return
+            import lightgbm as lgb
+            from sklearn.multioutput import MultiOutputRegressor
         except ImportError:
-            print("  警告：无法导入XGBoost")
+            print("  警告：无法导入LightGBM或sklearn，请安装：pip install lightgbm scikit-learn")
             return
-        
-        target = original if original is not None else pd.Series(data).interpolate().values
-        input_data = pd.Series(data).interpolate().values
-        input_data = np.nan_to_num(input_data, nan=np.nanmean(input_data))
-        
-        valid_idx = np.where(~missing_mask)[0]
-        X_list = [[] for _ in range(self.output_size)]
-        y_list = [[] for _ in range(self.output_size)]
-        
-        # 构建特征名称列表
-        self.feature_names = [f'price_t-{self.window_size-i}' for i in range(self.window_size)]
-        if features_df is not None:
-            self.feature_names.extend(features_df.columns.tolist())
+
+        # 优先使用原始完整数据来生成训练样本
+        if original is not None:
+            input_data = original.copy()
+            target = original.copy()
+            use_original = True
         else:
-            self.feature_names.extend(['hour', 'is_peak'])
-        if dayahead_filled is not None:
-            self.feature_names.append('dayahead_price')
-        
-        for i in range(len(valid_idx) - self.window_size - self.output_size + 1):
-            idx = valid_idx[i]
+            input_data = pd.Series(data).interpolate().values
+            target = data.copy()
+            use_original = False
+
+        X_list = []
+        y_list = []
+
+        # 构建特征名称列表
+        base_feature_names = [f'price_t-{self.window_size-i}' for i in range(self.window_size)]
+        if features_df is not None:
+            for j in range(self.output_size):
+                base_feature_names.extend([f'{col}_t+{j}' for col in features_df.columns])
+        else:
+            for j in range(self.output_size):
+                base_feature_names.extend([f'hour_t+{j}', f'is_peak_t+{j}'])
+        self.feature_names = base_feature_names
+
+        # 构建训练样本
+        n_samples = len(data)
+        skipped = 0
+        for idx in range(n_samples - self.window_size - self.output_size + 1):
             end_idx = idx + self.window_size
             target_end = end_idx + self.output_size
-            
-            if target_end > len(data):
-                continue
-            if np.any(missing_mask[idx:end_idx]) or np.any(missing_mask[end_idx:target_end]):
-                continue
-            
+
+            if not use_original:
+                if np.any(missing_mask[idx:end_idx]) or np.any(missing_mask[end_idx:target_end]):
+                    skipped += 1
+                    continue
+
             # 历史价格窗口
             price_hist = input_data[idx:end_idx]
-            
-            # 其他特征
+
+            # 所有时间步的增强特征
             other_features = []
             if features_df is not None:
-                other_features.extend(features_df.iloc[end_idx].values)
+                for j in range(self.output_size):
+                    other_features.extend(features_df.iloc[end_idx + j].values)
             else:
-                hour = end_idx % 24
-                peak = 1 if 8 <= hour <= 15 else 0
-                other_features.extend([hour, peak])
-            
-            if dayahead_filled is not None:
-                other_features.append(dayahead_filled[end_idx])
-            
+                for j in range(self.output_size):
+                    hour = (end_idx + j) % 24
+                    peak = 1 if 8 <= hour <= 15 else 0
+                    other_features.extend([hour, peak])
+
             X = np.concatenate([price_hist, other_features])
-            
-            for j in range(self.output_size):
-                X_list[j].append(X)
-                y_list[j].append(target[end_idx + j])
-        
-        if len(X_list[0]) < 10:
-            print("  警告：训练样本不足")
+            X_list.append(X)
+            y_list.append(target[end_idx:target_end])
+
+        if len(X_list) < 10:
+            print(f"  警告：训练样本不足（仅{len(X_list)}个）")
             return
+
+        X_train = np.array(X_list, dtype=np.float32)
+        y_train = np.array(y_list, dtype=np.float32)
+        self.n_features = X_train.shape[1]
+
+        print(f"  LightGBM训练样本: {len(X_list)}, 输入维度: {self.n_features}, 输出维度: {self.output_size}")
+        if skipped > 0:
+            print(f"  因缺失值跳过的样本: {skipped}")
         
-        self.n_features = len(X_list[0][0])
-        # print(f"  训练样本: {len(X_list[0])}, 输入维度: {self.n_features}")
+        # 使用MultiOutputRegressor包装LightGBM
+        base_model = lgb.LGBMRegressor(
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            learning_rate=self.learning_rate,
+            subsample=self.subsample,
+            colsample_bytree=self.colsample_bytree,
+            reg_alpha=self.reg_alpha,
+            reg_lambda=self.reg_lambda,
+            num_leaves=self.num_leaves,
+            feature_fraction=self.feature_fraction,
+            bagging_fraction=self.bagging_fraction,
+            bagging_freq=self.bagging_freq,
+            objective='regression',
+            random_state=42,
+            n_jobs=-1,
+            verbose=-1
+        )
         
-        self.models = []
-        for j in range(self.output_size):
-            X_train = np.array(X_list[j], dtype=np.float32)
-            y_train = np.array(y_list[j], dtype=np.float32)
-            
-            if np.any(np.isnan(X_train)):
-                X_train = np.nan_to_num(X_train, nan=0.0)
-            if np.any(np.isnan(y_train)):
-                y_train = np.nan_to_num(y_train, nan=np.nanmean(y_train))
-            
-            model = XGBoostModel(
-                name=f"XGB_{j}",
-                multi_output=False,
-                n_estimators=self.n_estimators,
-                max_depth=self.max_depth,
-                learning_rate=self.learning_rate,
-                subsample=self.subsample,
-                objective='reg:squarederror',
-                random_state=42,
-                n_jobs=-1
-            )
-            model.fit(X_train, y_train)
-            self.models.append(model)
-        # print(f"  XGBoost训练完成: {len(self.models)} 个模型")
+        self.model = MultiOutputRegressor(base_model, n_jobs=-1)
+        self.model.fit(X_train, y_train)
+        print(f"  LightGBM模型训练完成")
     
     def get_feature_importance(self) -> np.ndarray:
-        """获取平均特征重要性
-        
-        Returns
-        -------
-        importance : np.ndarray
-            各特征的平均重要性
-        """
-        if len(self.models) == 0:
+        """获取平均特征重要性"""
+        if self.model is None:
             return None
         
         importances = []
-        for model in self.models:
-            imp = model.get_feature_importance()
-            if imp is not None:
-                importances.append(imp)
-        
-        if len(importances) == 0:
-            return None
+        for estimator in self.model.estimators_:
+            importances.append(estimator.feature_importances_)
         
         return np.mean(importances, axis=0)
     
-    def impute(self, data: np.ndarray, features_df: pd.DataFrame = None,
-               dayahead_filled: np.ndarray = None) -> np.ndarray:
-        """填充缺失值
-        
-        Parameters
-        ----------
-        data : np.ndarray
-            含缺失值的数据
-        features_df : pd.DataFrame
-            特征DataFrame
-        dayahead_filled : np.ndarray
-            填充后的日前价格
-            
-        Returns
-        -------
-        filled : np.ndarray
-            填充后的数据
-        """
-        if len(self.models) == 0:
+    def impute(self, data: np.ndarray, features_df: pd.DataFrame = None) -> np.ndarray:
+        """填充缺失值"""
+        if self.model is None:
             return LinearImputer().impute(data)
         
         filled = data.copy()
@@ -320,26 +392,24 @@ class XGBImputer:
                 
                 window = pd.Series(window).interpolate().values
                 
-                # 构建其他特征
+                # 构建增强特征
                 other_features = []
                 if features_df is not None:
-                    other_features.extend(features_df.iloc[pos].values)
+                    for j in range(self.output_size):
+                        feat_pos = min(pos + j, len(features_df) - 1)
+                        other_features.extend(features_df.iloc[feat_pos].values)
                 else:
-                    hour = pos % 24
-                    peak = 1 if 8 <= hour <= 15 else 0
-                    other_features.extend([hour, peak])
-                
-                if dayahead_filled is not None:
-                    other_features.append(dayahead_filled[pos])
+                    for j in range(self.output_size):
+                        hour = (pos + j) % 24
+                        peak = 1 if 8 <= hour <= 15 else 0
+                        other_features.extend([hour, peak])
                 
                 X = np.concatenate([window, other_features]).reshape(1, -1)
                 
-                preds = []
-                for j in range(min(predict_len, len(self.models))):
-                    preds.append(self.models[j].predict(X)[0])
-                
-                filled[pos:pos + len(preds)] = preds
-                pos += len(preds)
+                # 多输出预测
+                preds = self.model.predict(X)[0][:predict_len]
+                filled[pos:pos + predict_len] = preds
+                pos += predict_len
         
         return filled
 
@@ -353,7 +423,7 @@ def calc_rmse(original: np.ndarray, filled: np.ndarray, mask: np.ndarray) -> flo
 
 
 def calc_mae(original: np.ndarray, filled: np.ndarray, mask: np.ndarray) -> float:
-    """计算MAE（平均绝对误差）"""
+    """计算MAE"""
     orig_vals = original[mask]
     filled_vals = filled[mask]
     filled_vals = np.nan_to_num(filled_vals, nan=np.nanmean(filled_vals))
@@ -361,17 +431,11 @@ def calc_mae(original: np.ndarray, filled: np.ndarray, mask: np.ndarray) -> floa
 
 
 def calc_smape(original: np.ndarray, filled: np.ndarray, mask: np.ndarray) -> float:
-    """计算sMAPE（对称平均绝对百分比误差）
-    
-    sMAPE = (1/n) * Σ(|预测值-实际值| / ((|预测值|+|实际值|)/2)) * 100%
-    """
+    """计算sMAPE"""
     orig_vals = original[mask]
     filled_vals = filled[mask]
-    
-    # 处理NaN值
     filled_vals = np.nan_to_num(filled_vals, nan=np.nanmean(filled_vals))
     
-    # 避免除以0
     denominator = (np.abs(orig_vals) + np.abs(filled_vals)) / 2
     denominator = np.where(denominator == 0, 1e-10, denominator)
     
@@ -380,13 +444,7 @@ def calc_smape(original: np.ndarray, filled: np.ndarray, mask: np.ndarray) -> fl
 
 
 def calc_metrics(original: np.ndarray, filled: np.ndarray, mask: np.ndarray) -> dict:
-    """计算所有评估指标
-    
-    Returns
-    -------
-    metrics : dict
-        包含RMSE、MAE、sMAPE的字典
-    """
+    """计算所有评估指标"""
     return {
         'rmse': calc_rmse(original, filled, mask),
         'mae': calc_mae(original, filled, mask),
@@ -398,7 +456,7 @@ def plot_comparison(test_data: np.ndarray, test_mask: np.ndarray,
                     results: Dict, title: str = "填充效果对比"):
     """绘制对比图"""
     fig, axes = plt.subplots(2, 1, figsize=(10, 5))
-    methods = ['线性插值', 'XGBoost']
+    methods = ['线性插值', 'LightGBM']
     
     missing_idx = np.where(test_mask)[0]
     gap_groups = []
@@ -425,24 +483,23 @@ def plot_comparison(test_data: np.ndarray, test_mask: np.ndarray,
         if gap_groups:
             ax.axvspan(0, 0, alpha=0.15, color='blue', label='缺失区域')
         
-        rmse = calc_rmse(test_data, results[method]['filled'], test_mask) if method in results else 0
-        ax.set_title(f'{method} (RMSE: {rmse:.2f})', fontsize=14, fontweight='bold')
-        ax.legend(loc='best')
+        ax.set_title(f'{method}', fontsize=12, fontweight='bold')
+        ax.set_xlabel('时间步', fontsize=10)
+        ax.set_ylabel('电价', fontsize=10)
+        ax.legend(loc='best', fontsize=9)
         ax.grid(True, alpha=0.3)
-        ax.set_xlim(0, len(test_data))
     
-    axes[-1].set_xlabel('时间点', fontsize=12)
-    plt.suptitle(title, fontsize=16, fontweight='bold')
+    plt.suptitle(title, fontsize=14, fontweight='bold')
     plt.tight_layout()
     
-    save_path = os.path.join(os.path.dirname(__file__), 'eda3_comparison.png')
+    save_path = os.path.join(os.path.dirname(__file__), 'imputation_comparison.png')
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"对比图已保存：{save_path}")
     plt.close(fig)
 
 
 def print_results(results: Dict, target_name: str):
-    """打印评估结果（包含RMSE、MAE、sMAPE）"""
+    """打印评估结果"""
     print(f"\n{'='*80}")
     print(f"{target_name}填充结果")
     print(f"{'='*80}")
@@ -453,7 +510,7 @@ def print_results(results: Dict, target_name: str):
     baseline_smape = results['线性插值']['smape']
     
     # 打印表头
-    print(f"{'方法':<14} {'RMSE':>12} {'改进':>8} {'MAE':>12}  {'sMAPE(%)':>12}")
+    print(f"{'方法':<20} {'RMSE':>12} {'改进':>8} {'MAE':>12}  {'sMAPE(%)':>12}")
     print("-" * 80)
     
     # 按RMSE排序打印
@@ -464,21 +521,12 @@ def print_results(results: Dict, target_name: str):
         
         rmse_improvement = (baseline_rmse - rmse) / baseline_rmse * 100
         
-        print(f"{name:<14} {rmse:>12.2f} {rmse_improvement:>7.1f}% {mae:>12.2f}{smape:>12.2f}")
+        print(f"{name:<20} {rmse:>12.2f} {rmse_improvement:>7.1f}% {mae:>12.2f}{smape:>12.2f}")
 
 
-def plot_feature_importance(imputer: XGBImputer, title: str = "特征重要性", save_path: str = None):
-    """绘制特征重要性图
-    
-    Parameters
-    ----------
-    imputer : XGBImputer
-        XGBoost填充器实例
-    title : str
-        图表标题
-    save_path : str
-        保存路径
-    """
+def plot_feature_importance(imputer: LightGBMImputerMultiOutput, title: str = "特征重要性", 
+                            save_path: str = None):
+    """绘制特征重要性图"""
     importance = imputer.get_feature_importance()
     if importance is None:
         print(f"  警告：无法获取{title}的特征重要性")
@@ -492,195 +540,35 @@ def plot_feature_importance(imputer: XGBImputer, title: str = "特征重要性",
         'importance': importance
     }).sort_values('importance', ascending=True)
     
-    # 只显示重要性前20的特征
-    importance_df = importance_df.tail(20)
+    # 只显示重要性前40的特征
+    importance_df = importance_df.tail(40)
     
+    # 绘制
     fig, ax = plt.subplots(figsize=(10, 8))
-    colors = plt.cm.RdYlGn(np.linspace(0.2, 0.8, len(importance_df)))
+    colors = plt.cm.viridis(np.linspace(0.3, 0.9, len(importance_df)))
     bars = ax.barh(importance_df['feature'], importance_df['importance'], color=colors)
-    
-    ax.set_xlabel('重要性', fontsize=12)
-    ax.set_ylabel('特征', fontsize=12)
-    ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.grid(True, alpha=0.3, axis='x')
-    
-    # 添加数值标签
-    for bar in bars:
-        width = bar.get_width()
-        ax.text(width, bar.get_y() + bar.get_height()/2, 
-                f'{width:.3f}', ha='left', va='center', fontsize=9)
+    ax.set_xlabel('Importance', fontsize=11)
+    ax.set_title(f'{title} - Top 40 Feature Importance', fontsize=13, fontweight='bold')
+    ax.grid(axis='x', alpha=0.3)
     
     plt.tight_layout()
     
     if save_path is None:
-        save_path = os.path.join(os.path.dirname(__file__), f'feature_importance_{title.replace(" ", "_")}.png')
+        save_path = os.path.join(os.path.dirname(__file__), 'feature_importance.png')
     
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"特征重要性图已保存：{save_path}")
-    plt.close(fig)  # 关闭图形，避免显示问题
-    
-    # 打印前10重要特征
-    print(f"\n{'='*60}")
-    print(f"{title} - Top 10 重要特征")
-    print(f"{'='*60}")
-    top10 = importance_df.tail(10).iloc[::-1]
-    for idx, row in top10.iterrows():
-        print(f"{row['feature']:<30} {row['importance']:.4f}")
+    plt.close(fig)
 
 
-class XGBImputerTuner:
-    """XGBoost超参数调优器（网格搜索+交叉验证）"""
-    
-    def __init__(self, window_size: int = 6, output_size: int = 4, n_splits: int = 3):
-        self.window_size = window_size
-        self.output_size = output_size
-        self.n_splits = n_splits
-        self.best_params = None
-        self.best_score = float('inf')
-        
-    def create_param_grid(self) -> dict:
-        """创建参数网格
-        
-        Returns
-        -------
-        dict : 各参数的候选值列表
-        """
-        param_grid = {
-            'n_estimators': [100, 200, 300],
-            'max_depth': [4, 6, 8],
-            'learning_rate': [0.05, 0.1],
-            'subsample': [0.8, 1.0],
-        }
-        
-        return param_grid
-    
-    def _generate_combinations(self, param_grid: dict) -> list:
-        """从参数网格生成所有参数组合"""
-        import itertools
-        keys = list(param_grid.keys())
-        values = [param_grid[k] for k in keys]
-        
-        combinations = []
-        for combo in itertools.product(*values):
-            combinations.append(dict(zip(keys, combo)))
-        
-        return combinations
-    
-    def cross_validate(self, data: np.ndarray, missing_mask: np.ndarray,
-                       features_df: pd.DataFrame, params: dict,
-                       dayahead_filled: np.ndarray = None) -> float:
-        """3折交叉验证"""
-        n = len(data)
-        fold_size = n // self.n_splits
-        scores = []
-        
-        for fold in range(self.n_splits):
-            # 划分训练集和验证集
-            val_start = fold * fold_size
-            val_end = val_start + fold_size if fold < self.n_splits - 1 else n
-            
-            train_indices = list(range(0, val_start)) + list(range(val_end, n))
-            val_indices = list(range(val_start, val_end))
-            
-            if len(train_indices) < self.window_size + self.output_size + 10:
-                continue
-            
-            # 准备数据
-            train_data = data[train_indices]
-            val_data = data[val_indices]
-            train_missing = np.isnan(train_data)
-            
-            # 创建imputer并训练
-            imputer = XGBImputer(
-                window_size=self.window_size,
-                output_size=self.output_size,
-                n_estimators=params.get('n_estimators', 100),
-                max_depth=params.get('max_depth', 6),
-                learning_rate=params.get('learning_rate', 0.1),
-                subsample=params.get('subsample', 0.8)
-            )
-            
-            # 准备特征
-            train_features = features_df.iloc[train_indices].reset_index(drop=True) if features_df is not None else None
-            val_features = features_df.iloc[val_indices].reset_index(drop=True) if features_df is not None else None
-            train_dayahead = dayahead_filled[train_indices] if dayahead_filled is not None else None
-            
-            try:
-                imputer.fit(train_data, train_missing, train_features, train_dayahead, original=train_data)
-                
-                # 生成验证集缺失
-                np.random.seed(42 + fold)
-                val_missing, val_mask = generate_missing(val_data, missing_rate=0.2)
-                
-                # 填充
-                val_dayahead = dayahead_filled[val_indices] if dayahead_filled is not None else None
-                filled = imputer.impute(val_missing, val_features, val_dayahead)
-                
-                # 计算RMSE
-                score = calc_rmse(val_data, filled, val_mask)
-                scores.append(score)
-            except Exception as e:
-                print(f"  Fold {fold+1} 失败: {e}")
-                scores.append(float('inf'))
-        
-        return np.mean(scores) if scores else float('inf')
-    
-    def tune(self, data: np.ndarray, features_df: pd.DataFrame = None,
-             dayahead_filled: np.ndarray = None, verbose: bool = True) -> dict:
-        """执行超参数调优"""
-        param_grid_dict = self.create_param_grid()
-        param_grid = self._generate_combinations(param_grid_dict)
-
-        if verbose:
-            print(f"\n{'='*70}")
-            print(f"开始超参数调优（网格搜索+{self.n_splits}折交叉验证）")
-            print(f"{'='*70}")
-            print(f"参数空间: {param_grid_dict}")
-            print(f"参数组合数: {len(param_grid)}")
-        
-        # 生成缺失值掩码（用于训练）
-        np.random.seed(42)
-        data_missing, missing_mask = generate_missing(data, missing_rate=0.2)
-        
-        best_params = None
-        best_score = float('inf')
-        
-        for i, params in enumerate(param_grid):
-            if verbose:
-                print(f"\n[{i+1}/{len(param_grid)}] 测试参数: {params}")
-            
-            score = self.cross_validate(data, missing_mask, features_df, params, dayahead_filled)
-            
-            if verbose:
-                print(f"  交叉验证RMSE: {score:.2f}")
-            
-            if score < best_score:
-                best_score = score
-                best_params = params.copy()
-                if verbose:
-                    print(f"  ★ 新的最佳参数!")
-        
-        self.best_params = best_params
-        self.best_score = best_score
-        
-        if verbose:
-            print(f"\n{'='*70}")
-            print(f"超参数调优完成")
-            print(f"{'='*70}")
-            print(f"最佳参数: {best_params}")
-            print(f"最佳交叉验证RMSE: {best_score:.2f}")
-        
-        return best_params
-
-
-def run_pipeline(missing_rate: float = 0.2, tune_hyperparams: bool = True):
+def run_pipeline(missing_rate: float = 0.2):
     """运行完整流程"""
     print("="*70)
     print("缺失值填充性能对比测试")
     print("="*70)
     
+    # 加载已合并的数据
     df = load_data()
-    print(f"\n数据加载完成：{df.shape}")
     
     # 只使用实时价格列
     realtime_col = [c for c in df.columns if '实时' in c and '价格' in c]
@@ -702,45 +590,55 @@ def run_pipeline(missing_rate: float = 0.2, tune_hyperparams: bool = True):
     print(f"特征列表：{list(features_df.columns)}")
     
     realtime_data = df_realtime[realtime_col].values.astype(float)
-    
+
     n = len(realtime_data)
-    train_end = int(n * 0.6)
-    val_end = int(n * 0.8)
-    
+    train_end = int(n * 0.8)
+
     train_data = realtime_data[:train_end]
-    test_data = realtime_data[val_end:]
-    test_features = features_df.iloc[val_end:].reset_index(drop=True)
+    test_data = realtime_data[train_end:]
+
+    # 划分训练集和测试集特征
+    train_features_raw = features_df.iloc[:train_end].reset_index(drop=True)
+    test_features_raw = features_df.iloc[train_end:].reset_index(drop=True)
+    
+    # 特征预处理
+    preprocessor = FeaturePreprocessor()
+    train_features = preprocessor.fit_transform(train_features_raw)
+    test_features = preprocessor.transform(test_features_raw)
+    print(f"训练集特征: {train_features.shape}, 测试集特征: {test_features.shape}")
     
     np.random.seed(42)
     train_missing, train_mask = generate_missing(train_data, missing_rate)
-    
-    # 超参数调优
-    if tune_hyperparams:
-        tuner = XGBImputerTuner(window_size=12, output_size=24, n_splits=3)
-        best_params = tuner.tune(train_data,
-                                 features_df.iloc[:train_end].reset_index(drop=True),
-                                 verbose=True)
-        print(f"\n使用调优参数: {best_params}")
-    else:
-        best_params = {'n_estimators': 100, 'max_depth': 4, 'learning_rate': 0.05, 'subsample': 0.8}
 
-    # 训练XGBoost填充器
-    xgb_imputer = XGBImputer(window_size=12, output_size=24,
-                             n_estimators=best_params.get('n_estimators', 100),
-                             max_depth=best_params.get('max_depth', 4),
-                             learning_rate=best_params.get('learning_rate', 0.05),
-                             subsample=best_params.get('subsample', 0.8))
-    xgb_imputer.fit(train_missing, train_mask, 
-                    features_df=features_df.iloc[:train_end].reset_index(drop=True),
-                    original=train_data)
-    
+    # 训练LightGBM填充器
+    print("\n  训练LightGBM填充器...")
+    lgb = LightGBMImputerMultiOutput(
+        window_size=6,
+        output_size=12,
+        n_estimators=300,
+        max_depth=8,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_alpha=0.05,
+        reg_lambda=3,
+        num_leaves=50,
+        feature_fraction=0.8,
+        bagging_fraction=0.8,
+        bagging_freq=5
+    )
+    lgb.fit(train_missing, train_mask,
+                 features_df=train_features,
+                 original=train_data)
+
     # 测试
     np.random.seed(123)
     test_missing, test_mask = generate_missing(test_data, missing_rate)
-    
+
+    # 对比两种方法
     results = {
         '线性插值': {'filled': LinearImputer().impute(test_missing), 'rmse': 0, 'mae': 0, 'smape': 0},
-        'XGBoost': {'filled': xgb_imputer.impute(test_missing, test_features), 'rmse': 0, 'mae': 0, 'smape': 0}
+        'LightGBM': {'filled': lgb.impute(test_missing, test_features), 'rmse': 0, 'mae': 0, 'smape': 0}
     }
     
     for name in results:
@@ -757,34 +655,25 @@ def run_pipeline(missing_rate: float = 0.2, tune_hyperparams: bool = True):
     plot_comparison(test_data, test_mask, results, "实时价格填充效果对比")
     
     # 特征重要性可视化
-    plot_feature_importance(xgb_imputer, "实时价格填充", 
-                            os.path.join(os.path.dirname(__file__), 'feature_importance_realtime.png'))
+    plot_feature_importance(lgb, "实时价格填充")
     
     return results
 
 
-def run_multi_missing_rate_experiment(missing_rates: list = None, tune_hyperparams: bool = True):
-    """多缺失率实验
-    
-    Parameters
-    ----------
-    missing_rates : list
-        缺失率列表，默认[0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
-    tune_hyperparams : bool
-        是否进行超参数调优
-    """
+def run_multi_missing_rate_experiment(missing_rates: list = None):
+    """多缺失率实验"""
     if missing_rates is None:
         missing_rates = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
     
     print("\n" + "="*80)
-    print("多缺失率实验（实时电价单阶段填充）")
+    print("多缺失率实验（LightGBM）")
     print("="*80)
     print(f"缺失率列表: {missing_rates}")
     
-    # 存储结果（仅实时电价）
+    # 存储结果
     results = {
         'missing_rates': missing_rates,
-        'realtime': {'XGBoost': {'rmse': [], 'mae': []}, '线性插值': {'rmse': [], 'mae': []}}
+        'realtime': {'LightGBM': {'rmse': [], 'mae': []}, '线性插值': {'rmse': [], 'mae': []}}
     }
     
     for i, mr in enumerate(missing_rates):
@@ -793,14 +682,14 @@ def run_multi_missing_rate_experiment(missing_rates: list = None, tune_hyperpara
         print(f"{'='*80}")
         
         # 运行单次实验
-        results_rt = run_pipeline(missing_rate=mr, tune_hyperparams=tune_hyperparams)
+        results_rt = run_pipeline(missing_rate=mr)
         
         if results_rt is None:
             print("  警告：实验失败，跳过")
             continue
         
         # 记录结果
-        for method in ['XGBoost', '线性插值']:
+        for method in ['LightGBM', '线性插值']:
             results['realtime'][method]['rmse'].append(results_rt[method]['rmse'])
             results['realtime'][method]['mae'].append(results_rt[method]['mae'])
     
@@ -811,27 +700,19 @@ def run_multi_missing_rate_experiment(missing_rates: list = None, tune_hyperpara
 
 
 def plot_comprehensive_evaluation(results: dict, save_path: str = None):
-    """绘制综合评估大图（2幅子图：实时电价RMSE和MAE）
-    
-    Parameters
-    ----------
-    results : dict
-        多缺失率实验结果
-    save_path : str
-        保存路径
-    """
+    """绘制综合评估大图"""
     missing_rates = results['missing_rates']
     
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle('实时电价缺失值填充性能综合评估', fontsize=16, fontweight='bold')
     
     # 颜色配置
-    colors = {'XGBoost': '#2E86AB', '线性插值': '#A23B72'}
-    markers = {'XGBoost': 'o', '线性插值': 's'}
+    colors = {'LightGBM': '#2E86AB', '线性插值': '#A23B72'}
+    markers = {'LightGBM': 'o', '线性插值': 's'}
     
-    # 子图1: 实时价格 - RMSE
+    # 子图1: RMSE
     ax1 = axes[0]
-    for method in ['XGBoost', '线性插值']:
+    for method in ['LightGBM', '线性插值']:
         ax1.plot(missing_rates, results['realtime'][method]['rmse'], 
                 marker=markers[method], color=colors[method], 
                 linewidth=2, markersize=8, label=method)
@@ -843,9 +724,9 @@ def plot_comprehensive_evaluation(results: dict, save_path: str = None):
     ax1.set_xticks(missing_rates)
     ax1.set_xticklabels([f'{mr*100:.0f}%' for mr in missing_rates])
     
-    # 子图2: 实时价格 - MAE
+    # 子图2: MAE
     ax2 = axes[1]
-    for method in ['XGBoost', '线性插值']:
+    for method in ['LightGBM', '线性插值']:
         ax2.plot(missing_rates, results['realtime'][method]['mae'], 
                 marker=markers[method], color=colors[method], 
                 linewidth=2, markersize=8, label=method)
@@ -853,6 +734,10 @@ def plot_comprehensive_evaluation(results: dict, save_path: str = None):
     ax2.set_ylabel('MAE', fontsize=12)
     ax2.set_title('实时电价 - MAE', fontsize=13, fontweight='bold')
     ax2.legend(fontsize=10)
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xticks(missing_rates)
+    ax2.set_xticklabels([f'{mr*100:.0f}%' for mr in missing_rates])
+    
     plt.tight_layout()
     
     if save_path is None:
@@ -868,18 +753,19 @@ def plot_comprehensive_evaluation(results: dict, save_path: str = None):
     print("="*80)
     
     print("\n【实时电价】")
-    print(f"{'缺失率':<10} {'XGBoost RMSE':<15} {'线性插值 RMSE':<15} {'XGBoost MAE':<15} {'线性插值 MAE':<15}")
-    print("-"*70)
+    print(f"{'缺失率':<10} {'LightGBM RMSE':<20} {'线性插值 RMSE':<15} {'LightGBM MAE':<20} {'线性插值 MAE':<15}")
+    print("-"*80)
     for i, mr in enumerate(missing_rates):
         print(f"{mr*100:>6.0f}%    "
-              f"{results['realtime']['XGBoost']['rmse'][i]:<14.2f} "
+              f"{results['realtime']['LightGBM']['rmse'][i]:<19.2f} "
               f"{results['realtime']['线性插值']['rmse'][i]:<14.2f} "
-              f"{results['realtime']['XGBoost']['mae'][i]:<14.2f} "
+              f"{results['realtime']['LightGBM']['mae'][i]:<19.2f} "
               f"{results['realtime']['线性插值']['mae'][i]:<14.2f}")
 
 
 if __name__ == "__main__":
-    # 运行多缺失率实验
-    # run_multi_missing_rate_experiment(tune_hyperparams=False)
     # 运行单次实验
-    run_pipeline(missing_rate=0.2, tune_hyperparams=False)
+    # run_pipeline(missing_rate=0.2)
+    
+    # 运行多缺失率实验
+    run_multi_missing_rate_experiment()
