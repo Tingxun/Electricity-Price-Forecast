@@ -673,17 +673,30 @@ def plot_feature_importance(imputer: LightGBMImputerMultiOutput, title: str = "�
     importance_df = pd.DataFrame({
         'feature': feature_names,
         'importance': importance
-    }).sort_values('importance', ascending=True)
+    })
+    
+    # 合并同一基础特征的不同时间步（如 _t+0, _t+1 等）
+    def extract_base_feature(feature_name):
+        """提取基础特征名，去除时间步后缀"""
+        if '_t+' in feature_name:
+            return feature_name.rsplit('_t+', 1)[0]
+        return feature_name
+    
+    importance_df['base_feature'] = importance_df['feature'].apply(extract_base_feature)
+    
+    # 按基础特征分组，计算平均重要性
+    merged_importance = importance_df.groupby('base_feature')['importance'].mean().reset_index()
+    merged_importance = merged_importance.sort_values('importance', ascending=True)
     
     # 只显示重要性前40的特征
-    importance_df = importance_df.tail(40)
+    merged_importance = merged_importance.tail(40)
     
     # 绘制
     fig, ax = plt.subplots(figsize=(10, 8))
-    colors = plt.cm.viridis(np.linspace(0.3, 0.9, len(importance_df)))
-    bars = ax.barh(importance_df['feature'], importance_df['importance'], color=colors)
+    colors = plt.cm.viridis(np.linspace(0.3, 0.9, len(merged_importance)))
+    bars = ax.barh(merged_importance['base_feature'], merged_importance['importance'], color=colors)
     ax.set_xlabel('Importance', fontsize=11)
-    ax.set_title(f'{title} - Top 40 Feature Importance', fontsize=13, fontweight='bold')
+    ax.set_title(f'{title} - Top 40 Feature Importance (Merged)', fontsize=13, fontweight='bold')
     ax.grid(axis='x', alpha=0.3)
     
     plt.tight_layout()
@@ -798,7 +811,7 @@ def run_pipeline(missing_rate: float = 0.2):
 def run_multi_missing_rate_experiment(missing_rates: list = None):
     """多缺失率实验"""
     if missing_rates is None:
-        missing_rates = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
+        missing_rates = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4]
     
     print("\n" + "="*80)
     print("多缺失率实验（LightGBM）")
@@ -900,7 +913,7 @@ def plot_comprehensive_evaluation(results: dict, save_path: str = None):
 
 if __name__ == "__main__":
     # 运行单次实验
-    run_pipeline(missing_rate=0.2)
+    run_pipeline(missing_rate=0.4)
     
     # 运行多缺失率实验
     # run_multi_missing_rate_experiment()
