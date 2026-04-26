@@ -206,6 +206,15 @@ class ModelTrainer:
                 if model_names is not None and 'XGBoost' in model_names:
                     logger.warning("XGBoost未安装，跳过")
         
+        # 尝试添加LightGBM（仅在用户指定了LightGBM或训练所有模型时检查）
+        if model_names is None or 'LightGBM' in model_names:
+            try:
+                import lightgbm
+                models.append({'name': 'LightGBM', 'type': 'tree', 'params': {'model_type': 'lightgbm', 'n_estimators': 100}})
+            except ImportError:
+                if model_names is not None and 'LightGBM' in model_names:
+                    logger.warning("LightGBM未安装，跳过")
+        
         # 神经网络模型（仅在用户指定了神经网络模型或训练所有模型时添加）
         neural_models = [
             {'name': 'MLP', 'type': 'neural', 'params': {'model_type': 'mlp', 'hidden_dims': [128, 64], 'epochs': 50}},

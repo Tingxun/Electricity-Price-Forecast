@@ -1,10 +1,8 @@
 """
-特征工程模块 
+特征工程模块
 
-可用特征：
-- 时间特征：月份、星期、是否周末、季度、小时、是否高峰时段、是否夜间
-- 日前特征：系统负荷-日前、非市场化机组出力-日前、新能源出力-日前、平均出清价格-日前
-- 目标：平均出清价格-实时
+处理预处理后的完整数据集（包含气象和市场信息）
+生成用于训练和预测的特征
 """
 
 import os
@@ -24,27 +22,26 @@ logger = logging.getLogger(__name__)
 
 class FeatureEngineer:
     """
-    特征工程类 
+    特征工程类
     
     预测场景：T时刻预测T+1的24点实时价格
-    - 使用T-2及之前的历史实时价格构建滞后特征
-    - 使用T日披露的T+1日前数据作为输入特征
+    
+    数据说明：
+    - 市场数据中的"实时"列实际上是用"日前"数据填充后的结果
+    - 因此：市场特征本质上是T+1日的日前披露数据（在T日已知）
+    - 气象数据：T+1日的24小时气象预报（在T日已知）
+    - 目标：T+1日的24点实时价格（需要预测的真实值）
     """
     
     def __init__(self):
         # 滞后周期配置
-        self.lag_periods = [1, 2, 3, 7]  # 1天、2天、3天、7天前
+        self.lag_periods = [1, 2, 3, 7]
         
-        # 日前披露特征列
-        self.dayahead_cols = [
-            '系统负荷-日前',
-            '非市场化机组出力-日前',
-            '新能源出力-日前',
-            '平均出清价格-日前（元/MWh）',
-        ]
-        
-        # 实时价格列（用于滞后特征和目标）
+        # 目标列
         self.price_col = '平均出清价格-实时（元/MWh）'
+        
+        # 时间特征列
+        self.time_cols = ['月份', '星期', '是否周末', '季度']
     
     def create_all_features(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
         """
@@ -53,7 +50,7 @@ class FeatureEngineer:
         Parameters
         ----------
         df : pd.DataFrame
-            输入数据（processed数据，长格式，每天24行）
+            输入数据（processed_data.csv，长格式，每天24行）
             
         Returns
         -------
@@ -85,7 +82,7 @@ class FeatureEngineer:
             historical_dates = all_dates[:i-1]
             historical_data = df[df['日期'].isin(historical_dates)].copy()
             
-            # 获取当前日数据（T日，包含T+1的日前披露数据）
+            # 获取当前日数据（T日）
             current_data = df[df['日期'] == current_date].copy()
             if len(current_data) != 24:
                 continue
@@ -124,7 +121,7 @@ class FeatureEngineer:
         
         print(f"\n特征创建完成:")
         print(f"  总样本数: {len(features_df)}")
-        print(f"  特征数: {len(features_df.columns) - len(target_cols) - 1}")  # 减去预测日期
+        print(f"  特征数: {len(features_df.columns) - len(target_cols) - 1}")
         print(f"  目标数: {len(target_cols)}")
         
         return features_df, target_cols
@@ -143,16 +140,32 @@ class FeatureEngineer:
         features['是否周末'] = 1 if target_date.dayofweek >= 5 else 0
         features['季度'] = (target_date.month - 1) // 3 + 1
         
-        # 2. 日前披露特征（24小时）
-        for _, row in current_data.iterrows():
+        # 2. 市场特征（T+1日的日前披露数据）
+        # 数据预处理时已用日前数据填充实时数据缺失值
+        # 因此这里的"实时"列实际上是T+1日的日前披露值
+        market_cols = [
+            '系统负荷-实时', '非市场化机组出力-实时', '风电出力-实时',
+            '光伏出力-实时', '水电出力-实时', '联络线计划-实时'
+        ]
+        for _, row in target_data.iterrows():
             hour = int(row['小时'])
-            for col in self.dayahead_cols:
-                if col in row.index:
-                    # 简化列名
-                    short_name = col.replace('（元/MWh）', '').replace('-日前', '')
+            for col in market_cols:
+                if col in row.index and pd.notna(row[col]):
+                    short_name = col.replace('（元/MWh）', '').replace('-实时', '')
                     features[f'日前_H{hour:02d}_{short_name}'] = row[col]
         
-        # 3. 历史滞后特征（各滞后周期的24小时价格）
+        # 3. 气象特征（T+1日的24小时气象预报）
+        # 在T日可以获取T+1日的气象预报数据
+        weather_cols = [c for c in target_data.columns if any(x in c for x in ['温度', '风速', '湿度', '压强', '云量', '辐照度', '降雨量'])]
+        for _, row in target_data.iterrows():
+            hour = int(row['小时'])
+            for col in weather_cols:
+                if col in row.index and pd.notna(row[col]):
+                    # 简化列名
+                    short_name = col.replace('-预测', '').replace('-实际', '')
+                    features[f'气象_H{hour:02d}_{short_name}'] = row[col]
+        
+        # 4. 历史滞后特征（各滞后周期的24小时价格）
         unique_hist_dates = historical_data['日期'].unique()
         for lag in self.lag_periods:
             if len(unique_hist_dates) >= lag:
@@ -162,10 +175,10 @@ class FeatureEngineer:
                     lag_data = lag_data.sort_values('小时')
                     for _, row in lag_data.iterrows():
                         hour = int(row['小时'])
-                        if self.price_col in row.index:
+                        if self.price_col in row.index and pd.notna(row[self.price_col]):
                             features[f'滞后{lag}天_H{hour:02d}_价格'] = row[self.price_col]
         
-        # 4. 目标值（T+1的24点实时价格）
+        # 5. 目标值（T+1的24点实时价格）
         target_data = target_data.sort_values('小时')
         for _, row in target_data.iterrows():
             hour = int(row['小时'])
@@ -189,21 +202,21 @@ class FeatureEngineer:
         return df
     
     def save_features(self, features_df: pd.DataFrame, target_cols: List[str],
-                     feature_path: Optional[str] = None):
+                     feature_path: Optional[Path] = None):
         """保存特征数据"""
         if feature_path is None:
-            feature_path = config.data_paths['features']
+            feature_path = config.get_data_path('features')
         
         os.makedirs(feature_path, exist_ok=True)
         
         # 保存特征数据
-        data_file = os.path.join(feature_path, 'features.csv')
+        data_file = feature_path / 'features.csv'
         features_df.to_csv(data_file, index=False, encoding='utf-8-sig')
         logger.info(f"特征数据已保存: {data_file}")
         
         # 保存特征信息
         import json
-        info_file = os.path.join(feature_path, 'feature_info.json')
+        info_file = feature_path / 'feature_info.json'
         feature_info = {
             'target_columns': target_cols,
             'feature_columns': [c for c in features_df.columns if c not in target_cols and c != '预测日期'],
@@ -215,18 +228,18 @@ class FeatureEngineer:
             json.dump(feature_info, f, ensure_ascii=False, indent=2)
         logger.info(f"特征信息已保存: {info_file}")
     
-    def load_features(self, feature_path: Optional[str] = None) -> Tuple[pd.DataFrame, List[str]]:
+    def load_features(self, feature_path: Optional[Path] = None) -> Tuple[pd.DataFrame, List[str]]:
         """加载特征数据"""
         if feature_path is None:
-            feature_path = config.data_paths['features']
+            feature_path = config.get_data_path('features')
         
-        data_file = os.path.join(feature_path, 'features.csv')
+        data_file = feature_path / 'features.csv'
         features_df = pd.read_csv(data_file)
         if '预测日期' in features_df.columns:
             features_df['预测日期'] = pd.to_datetime(features_df['预测日期'])
         
         import json
-        info_file = os.path.join(feature_path, 'feature_info.json')
+        info_file = feature_path / 'feature_info.json'
         with open(info_file, 'r', encoding='utf-8') as f:
             feature_info = json.load(f)
         
@@ -239,16 +252,16 @@ def main():
     print("开始生成特征")
     print("=" * 60)
     
-    # 检查processed数据
-    processed_file = config.data_paths['processed'] / 'processed_data.csv'
+    # 检查预处理数据
+    processed_file = config.get_data_path('processed_data')
     if not processed_file.exists():
-        logger.error(f"processed数据不存在: {processed_file}")
+        logger.error(f"预处理数据不存在: {processed_file}")
+        logger.error("请先运行 data_preprocessing.ipynb 完成数据预处理")
         return
     
     # 加载数据
     df = pd.read_csv(processed_file)
-    df['日期'] = pd.to_datetime(df['日期'])
-    logger.info(f"数据加载完成: {len(df)} 条记录")
+    logger.info(f"数据加载完成: {df.shape}")
     
     # 创建特征
     engineer = FeatureEngineer()

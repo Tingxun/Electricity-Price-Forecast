@@ -1,4 +1,11 @@
-# 特征配置文件 
+# 特征配置文件 - 更新版
+# 适配包含气象和市场信息的完整数据集
+# 
+# 重要说明：
+# - 市场数据中的"实时"列已用"日前"数据填充（除价格外）
+# - 因此市场特征本质上是T+1日的日前披露数据
+# - 气象特征是T+1日的24小时气象预报
+# - 目标：T+1日的24点实时价格
 
 # 特征组定义
 feature_groups:
@@ -9,7 +16,7 @@ feature_groups:
     - 是否周末
     - 季度
 
-  # 日前披露特征（24小时）- 系统负荷
+  # 日前市场特征（T+1日的24小时日前披露数据）- 系统负荷
   dayahead_load:
     - 日前_H00_系统负荷
     - 日前_H01_系统负荷
@@ -36,7 +43,7 @@ feature_groups:
     - 日前_H22_系统负荷
     - 日前_H23_系统负荷
 
-  # 日前披露特征（24小时）- 非市场化机组
+  # 日前市场特征（T+1日的24小时日前披露数据）- 非市场化机组
   dayahead_nonmarket:
     - 日前_H00_非市场化机组出力
     - 日前_H01_非市场化机组出力
@@ -63,59 +70,113 @@ feature_groups:
     - 日前_H22_非市场化机组出力
     - 日前_H23_非市场化机组出力
 
-  # 日前披露特征（24小时）- 新能源
-  dayahead_renewable:
-    - 日前_H00_新能源出力
-    - 日前_H01_新能源出力
-    - 日前_H02_新能源出力
-    - 日前_H03_新能源出力
-    - 日前_H04_新能源出力
-    - 日前_H05_新能源出力
-    - 日前_H06_新能源出力
-    - 日前_H07_新能源出力
-    - 日前_H08_新能源出力
-    - 日前_H09_新能源出力
-    - 日前_H10_新能源出力
-    - 日前_H11_新能源出力
-    - 日前_H12_新能源出力
-    - 日前_H13_新能源出力
-    - 日前_H14_新能源出力
-    - 日前_H15_新能源出力
-    - 日前_H16_新能源出力
-    - 日前_H17_新能源出力
-    - 日前_H18_新能源出力
-    - 日前_H19_新能源出力
-    - 日前_H20_新能源出力
-    - 日前_H21_新能源出力
-    - 日前_H22_新能源出力
-    - 日前_H23_新能源出力
+  # 日前市场特征（T+1日的24小时日前披露数据）- 风电出力
+  dayahead_wind:
+    - 日前_H00_风电出力
+    - 日前_H01_风电出力
+    - 日前_H02_风电出力
+    - 日前_H03_风电出力
+    - 日前_H04_风电出力
+    - 日前_H05_风电出力
+    - 日前_H06_风电出力
+    - 日前_H07_风电出力
+    - 日前_H08_风电出力
+    - 日前_H09_风电出力
+    - 日前_H10_风电出力
+    - 日前_H11_风电出力
+    - 日前_H12_风电出力
+    - 日前_H13_风电出力
+    - 日前_H14_风电出力
+    - 日前_H15_风电出力
+    - 日前_H16_风电出力
+    - 日前_H17_风电出力
+    - 日前_H18_风电出力
+    - 日前_H19_风电出力
+    - 日前_H20_风电出力
+    - 日前_H21_风电出力
+    - 日前_H22_风电出力
+    - 日前_H23_风电出力
 
-  # 日前披露特征（24小时）- 日前价格
-  dayahead_price:
-    - 日前_H00_平均出清价格
-    - 日前_H01_平均出清价格
-    - 日前_H02_平均出清价格
-    - 日前_H03_平均出清价格
-    - 日前_H04_平均出清价格
-    - 日前_H05_平均出清价格
-    - 日前_H06_平均出清价格
-    - 日前_H07_平均出清价格
-    - 日前_H08_平均出清价格
-    - 日前_H09_平均出清价格
-    - 日前_H10_平均出清价格
-    - 日前_H11_平均出清价格
-    - 日前_H12_平均出清价格
-    - 日前_H13_平均出清价格
-    - 日前_H14_平均出清价格
-    - 日前_H15_平均出清价格
-    - 日前_H16_平均出清价格
-    - 日前_H17_平均出清价格
-    - 日前_H18_平均出清价格
-    - 日前_H19_平均出清价格
-    - 日前_H20_平均出清价格
-    - 日前_H21_平均出清价格
-    - 日前_H22_平均出清价格
-    - 日前_H23_平均出清价格
+  # 日前市场特征（T+1日的24小时日前披露数据）- 光伏出力
+  dayahead_solar:
+    - 日前_H00_光伏出力
+    - 日前_H01_光伏出力
+    - 日前_H02_光伏出力
+    - 日前_H03_光伏出力
+    - 日前_H04_光伏出力
+    - 日前_H05_光伏出力
+    - 日前_H06_光伏出力
+    - 日前_H07_光伏出力
+    - 日前_H08_光伏出力
+    - 日前_H09_光伏出力
+    - 日前_H10_光伏出力
+    - 日前_H11_光伏出力
+    - 日前_H12_光伏出力
+    - 日前_H13_光伏出力
+    - 日前_H14_光伏出力
+    - 日前_H15_光伏出力
+    - 日前_H16_光伏出力
+    - 日前_H17_光伏出力
+    - 日前_H18_光伏出力
+    - 日前_H19_光伏出力
+    - 日前_H20_光伏出力
+    - 日前_H21_光伏出力
+    - 日前_H22_光伏出力
+    - 日前_H23_光伏出力
+
+  # 日前市场特征（T+1日的24小时日前披露数据）- 水电出力
+  dayahead_hydro:
+    - 日前_H00_水电出力
+    - 日前_H01_水电出力
+    - 日前_H02_水电出力
+    - 日前_H03_水电出力
+    - 日前_H04_水电出力
+    - 日前_H05_水电出力
+    - 日前_H06_水电出力
+    - 日前_H07_水电出力
+    - 日前_H08_水电出力
+    - 日前_H09_水电出力
+    - 日前_H10_水电出力
+    - 日前_H11_水电出力
+    - 日前_H12_水电出力
+    - 日前_H13_水电出力
+    - 日前_H14_水电出力
+    - 日前_H15_水电出力
+    - 日前_H16_水电出力
+    - 日前_H17_水电出力
+    - 日前_H18_水电出力
+    - 日前_H19_水电出力
+    - 日前_H20_水电出力
+    - 日前_H21_水电出力
+    - 日前_H22_水电出力
+    - 日前_H23_水电出力
+
+  # 日前市场特征（T+1日的24小时日前披露数据）- 联络线计划
+  dayahead_tie_line:
+    - 日前_H00_联络线计划
+    - 日前_H01_联络线计划
+    - 日前_H02_联络线计划
+    - 日前_H03_联络线计划
+    - 日前_H04_联络线计划
+    - 日前_H05_联络线计划
+    - 日前_H06_联络线计划
+    - 日前_H07_联络线计划
+    - 日前_H08_联络线计划
+    - 日前_H09_联络线计划
+    - 日前_H10_联络线计划
+    - 日前_H11_联络线计划
+    - 日前_H12_联络线计划
+    - 日前_H13_联络线计划
+    - 日前_H14_联络线计划
+    - 日前_H15_联络线计划
+    - 日前_H16_联络线计划
+    - 日前_H17_联络线计划
+    - 日前_H18_联络线计划
+    - 日前_H19_联络线计划
+    - 日前_H20_联络线计划
+    - 日前_H21_联络线计划
+    - 日前_H22_联络线计划
+    - 日前_H23_联络线计划
 
   # 价格滞后特征（1天前）
   lag_price_1d:
@@ -227,14 +288,13 @@ feature_groups:
 
 # 模型特定特征配置
 model_features:
-  # 线性模型
+  # 线性模型 - 不使用气象特征（避免维度灾难）
   LinearRegression:
     feature_groups:
       - time_basic
       - dayahead_load
-      - dayahead_price
       - lag_price_1d
-    description: "基础特征"
+    description: "基础特征（时间+日前负荷+滞后1天价格）"
     normalize: true
 
   Ridge:
@@ -242,61 +302,38 @@ model_features:
       - time_basic
       - dayahead_load
       - dayahead_nonmarket
-      - dayahead_renewable
-      - dayahead_price
+      - dayahead_wind
+      - dayahead_solar
       - lag_price_1d
       - lag_price_2d
       - lag_price_7d
-    description: "完整特征，L2正则化"
+    description: "完整日前市场特征+L2正则化（无气象特征）"
     normalize: true
 
   Lasso:
     feature_groups:
       - time_basic
       - dayahead_load
-      - dayahead_price
       - lag_price_1d
       - lag_price_7d
-    description: "L1正则化自动特征选择"
+    description: "L1正则化自动特征选择（无气象特征）"
     normalize: true
 
-  ElasticNet:
-    feature_groups:
-      - time_basic
-      - dayahead_load
-      - dayahead_nonmarket
-      - dayahead_renewable
-      - dayahead_price
-      - lag_price_1d
-      - lag_price_2d
-      - lag_price_3d
-    description: "L1+L2正则化"
-    normalize: true
-
-  # 树模型
+  # 树模型 - 包含气象特征（通过模式匹配）
   RandomForest:
     feature_groups:
       - time_basic
       - dayahead_load
       - dayahead_nonmarket
-      - dayahead_renewable
-      - dayahead_price
+      - dayahead_wind
+      - dayahead_solar
+      - dayahead_hydro
+      - dayahead_tie_line
       - lag_price_1d
       - lag_price_7d
-    description: "完整特征，集成学习"
-    normalize: false
-
-  GradientBoosting:
-    feature_groups:
-      - time_basic
-      - dayahead_load
-      - dayahead_nonmarket
-      - dayahead_renewable
-      - dayahead_price
-      - lag_price_1d
-      - lag_price_2d
-      - lag_price_3d
-    description: "完整特征，梯度提升"
+    include_patterns:
+      - "气象_H"  # 匹配所有气象特征（T+1日的24小时气象预报）
+    description: "完整日前市场特征+T+1日气象预报，集成学习"
     normalize: false
 
   XGBoost:
@@ -304,11 +341,33 @@ model_features:
       - time_basic
       - dayahead_load
       - dayahead_nonmarket
-      - dayahead_renewable
-      - dayahead_price
+      - dayahead_wind
+      - dayahead_solar
+      - dayahead_hydro
+      - dayahead_tie_line
       - lag_price_1d
       - lag_price_2d
       - lag_price_3d
       - lag_price_7d
-    description: "完整特征，XGBoost"
+    include_patterns:
+      - "气象_H"  # 匹配所有气象特征（T+1日的24小时气象预报）
+    description: "完整日前市场特征+T+1日气象预报，XGBoost"
+    normalize: false
+
+  LightGBM:
+    feature_groups:
+      - time_basic
+      - dayahead_load
+      - dayahead_nonmarket
+      - dayahead_wind
+      - dayahead_solar
+      - dayahead_hydro
+      - dayahead_tie_line
+      - lag_price_1d
+      - lag_price_2d
+      - lag_price_3d
+      - lag_price_7d
+    include_patterns:
+      - "气象_H"  # 匹配所有气象特征（T+1日的24小时气象预报）
+    description: "完整日前市场特征+T+1日气象预报，LightGBM"
     normalize: false

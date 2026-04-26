@@ -4,6 +4,7 @@
 """
 
 import yaml
+import re
 import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Optional, Set
@@ -110,9 +111,19 @@ class FeatureSelector:
             else:
                 logger.warning(f"特征组 {group_name} 不存在")
         
-        # 添加额外包含的特征
+        # 添加额外包含的特征（精确匹配）
         include_features = model_config.get('include_features', [])
         selected.update(include_features)
+        
+        # 使用模式匹配添加特征（用于动态特征如气象数据）
+        include_patterns = model_config.get('include_patterns', [])
+        for pattern in include_patterns:
+            # 将模式转换为正则表达式
+            regex_pattern = pattern.replace('*', '.*')
+            matched_features = [f for f in available_features if re.search(regex_pattern, f)]
+            selected.update(matched_features)
+            if matched_features:
+                logger.info(f"  模式 '{pattern}' 匹配到 {len(matched_features)} 个特征")
         
         # 移除排除的特征
         exclude_features = model_config.get('exclude_features', [])
