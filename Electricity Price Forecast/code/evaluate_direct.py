@@ -22,7 +22,7 @@ from data_split import split_by_months
 from feature_engineering_direct import DirectFeatureEngineer
 from feature_selector import FeatureSelector
 from model_factory import list_model_types
-from utils.metrics import calculate_mae, calculate_rmse, calculate_smape
+from utils.metrics import calculate_mae, calculate_rmse, calculate_smape, calculate_accuracy_rate
 
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,7 @@ class DirectEvaluator:
                     "mae": calculate_mae(data["y_test"], y_pred),
                     "rmse": calculate_rmse(data["y_test"], y_pred),
                     "smape": calculate_smape(data["y_test"], y_pred),
+                    "acc_rate": calculate_accuracy_rate(data["y_test"], y_pred, threshold=20.0),
                     "n_test": len(data["y_test"]),
                     "test_period": data["split_info"]["test_period"],
                 }
@@ -164,6 +165,7 @@ class DirectEvaluator:
             "overall_mae": float(results_df["mae"].mean()),
             "overall_rmse": float(results_df["rmse"].mean()),
             "overall_smape": float(results_df["smape"].mean()),
+            "overall_acc_rate": float(results_df["acc_rate"].mean()),
         }
         with open(log_dir / "summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
@@ -199,7 +201,8 @@ def main() -> None:
     print(
         f"\nAverage MAE={results['mae'].mean():.4f}, "
         f"RMSE={results['rmse'].mean():.4f}, "
-        f"sMAPE={results['smape'].mean():.2f}%"
+        f"sMAPE={results['smape'].mean():.2f}%, "
+        f"AccRate={results['acc_rate'].mean():.2f}%"
     )
 
 

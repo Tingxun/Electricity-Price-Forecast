@@ -29,7 +29,7 @@ from data_split import split_by_months
 from feature_engineering_direct import DirectFeatureEngineer
 from feature_selector import FeatureSelector
 from model_factory import create_model, get_default_params, get_param_space, list_model_types
-from utils.metrics import calculate_mae, calculate_rmse, calculate_smape
+from utils.metrics import calculate_mae, calculate_rmse, calculate_smape, calculate_accuracy_rate
 
 
 logger = logging.getLogger(__name__)
@@ -113,6 +113,7 @@ class DirectTrainer:
         test_mae = calculate_mae(data["y_test"], y_pred)
         test_rmse = calculate_rmse(data["y_test"], y_pred)
         test_smape = calculate_smape(data["y_test"], y_pred)
+        test_acc_rate = calculate_accuracy_rate(data["y_test"], y_pred, threshold=20.0)
 
         model_path = self.model_dir / f"model_H{hour:02d}.pkl"
         scaler_path = self.model_dir / f"scaler_H{hour:02d}.pkl"
@@ -138,6 +139,7 @@ class DirectTrainer:
             "test_mae": test_mae,
             "test_rmse": test_rmse,
             "test_smape": test_smape,
+            "test_acc_rate": test_acc_rate,
             "training_time": elapsed,
             "trained_at": datetime.now().isoformat(timespec="seconds"),
         }
@@ -145,11 +147,12 @@ class DirectTrainer:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
 
         logger.info(
-            "H%02d 完成: CV_sMAPE=%.4f, Test_MAE=%.4f, sMAPE=%.2f%%",
+            "H%02d 完成: CV_sMAPE=%.4f, Test_MAE=%.4f, sMAPE=%.2f%%, AccRate=%.2f%%",
             hour,
             best_cv_smape,
             test_mae,
             test_smape,
+            test_acc_rate,
         )
         return {
             "hour": hour,
@@ -158,6 +161,7 @@ class DirectTrainer:
             "test_mae": test_mae,
             "test_rmse": test_rmse,
             "test_smape": test_smape,
+            "test_acc_rate": test_acc_rate,
             "training_time": elapsed,
             "model_path": str(model_path),
         }

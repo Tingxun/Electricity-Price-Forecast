@@ -171,6 +171,67 @@ def calculate_r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return 1 - (ss_res / ss_tot)
 
 
+def calculate_sape(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
+    """
+    计算对称绝对百分比误差 (Symmetric Absolute Percentage Error)
+    
+    sAPE = |y_true - y_pred| / ((|y_true| + |y_pred|) / 2) * 100%
+    
+    Parameters
+    ----------
+    y_true : np.ndarray
+        真实值
+    y_pred : np.ndarray
+        预测值
+        
+    Returns
+    -------
+    sape : np.ndarray
+        每个样本的 sAPE 值 (%)
+    """
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    
+    denominator = (np.abs(y_true) + np.abs(y_pred)) / 2
+    
+    # 避免除以零
+    mask = denominator != 0
+    sape = np.zeros_like(y_true, dtype=float)
+    sape[mask] = np.abs(y_true[mask] - y_pred[mask]) / denominator[mask] * 100
+    
+    return sape
+
+
+def calculate_accuracy_rate(y_true: np.ndarray, y_pred: np.ndarray, threshold: float = 20.0) -> float:
+    """
+    计算达标率（sAPE < threshold 的样本比例）
+    
+    达标率 = (sAPE < threshold 的样本数) / (总样本数) * 100%
+    
+    Parameters
+    ----------
+    y_true : np.ndarray
+        真实值
+    y_pred : np.ndarray
+        预测值
+    threshold : float, default=20.0
+        达标阈值 (%)
+        
+    Returns
+    -------
+    accuracy_rate : float
+        达标率 (%)
+    """
+    sape = calculate_sape(y_true, y_pred)
+    
+    # 只统计有效值（denominator不为0的样本）
+    valid_mask = sape >= 0
+    if not np.any(valid_mask):
+        return 0.0
+    
+    return np.mean(sape[valid_mask] < threshold) * 100
+
+
 def evaluate_all_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     """
     计算所有评估指标
@@ -192,7 +253,8 @@ def evaluate_all_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
         'RMSE': calculate_rmse(y_true, y_pred),
         'MAE': calculate_mae(y_true, y_pred),
         'sMAPE': calculate_smape(y_true, y_pred),
-        'R2': calculate_r2(y_true, y_pred)
+        'R2': calculate_r2(y_true, y_pred),
+        'AccRate': calculate_accuracy_rate(y_true, y_pred, threshold=20.0)
     }
 
 

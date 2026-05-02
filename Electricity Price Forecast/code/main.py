@@ -77,7 +77,8 @@ def evaluate_mode(config: Config, args: argparse.Namespace) -> None:
     print(
         f"\nAverage MAE={results['mae'].mean():.4f}, "
         f"RMSE={results['rmse'].mean():.4f}, "
-        f"sMAPE={results['smape'].mean():.2f}%"
+        f"sMAPE={results['smape'].mean():.2f}%, "
+        f"AccRate={results['acc_rate'].mean():.2f}%"
     )
 
 
