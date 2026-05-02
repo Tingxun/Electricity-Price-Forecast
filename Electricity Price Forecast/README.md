@@ -8,7 +8,9 @@
 Electricity Price Forecast/
 ├── code/
 │   ├── main.py                    # Direct 工作流统一入口
-│   ├── config.py                  # 路径与默认训练配置
+│   ├── config/
+│   │   ├── __init__.py
+│   │   └── config.py              # 路径与默认训练配置
 │   ├── data_split.py              # 按自然月划分训练/测试
 │   ├── feature_selector.py        # 内置特征组与模型特征选择
 │   ├── feature_engineering_direct.py
@@ -17,7 +19,10 @@ Electricity Price Forecast/
 │   ├── train_direct.py            # 每小时独立训练和调参
 │   ├── evaluate_direct.py         # Direct 模型评估
 │   ├── backtest_direct.py         # 月份滚动回测
-│   └── predict_direct.py          # 24 小时预测
+│   ├── predict_direct.py          # 24 小时预测
+│   └── utils/
+│       ├── metrics.py
+│       └── visualization.py
 ├── data/
 │   ├── raw/
 │   ├── processed/
@@ -27,9 +32,6 @@ Electricity Price Forecast/
 │   ├── logs/
 │   ├── predictions/
 │   └── figures/
-├── utils/
-│   ├── metrics.py
-│   └── visualization.py
 └── Exploratory Analysis/          # 探索性分析 notebook
 ```
 
