@@ -327,8 +327,6 @@ def main() -> None:
     args = parse_args()
     trainer = DirectTrainer(Config(), args.model, args.n_iter, args.cv_folds, test_months=args.test_months)
     results = trainer.train(args.hours)
-    print(results.to_string(index=False))
-
 
 if __name__ == "__main__":
     main()
