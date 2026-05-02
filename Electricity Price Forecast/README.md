@@ -1,284 +1,186 @@
 # 湖北省日前电价预测系统
 
-基于多源异构数据的电力现货市场日前电价预测系统，支持多种机器学习模型的训练、评估和预测。
-
-## 项目概述
-
-本项目针对湖北省电力现货市场，利用市场边界信息（负荷预测、新能源出力、联络线计划等）和出清价格数据，构建日前电价预测模型。支持24小时逐点价格预测，为市场参与者提供决策支持。
+基于 Direct 多步预测策略的日前电价预测项目。当前框架已删除旧的 global / 多输出策略，只保留“每个预测小时一个独立模型”的主实验流程。
 
 ## 项目结构
 
-```
+```text
 Electricity Price Forecast/
-├── code/                       # 核心代码目录
-│   ├── main.py                 # 主程序入口
-│   ├── config.py               # 项目配置
-│   ├── data_preprocessing.py   # 数据预处理
-│   ├── feature_engineering.py  # 特征工程
-│   ├── feature_selector.py     # 特征选择
-│   ├── train.py                # 模型训练
-│   ├── evaluate.py             # 模型评估
-│   ├── predict.py              # 预测功能
-│   ├── hyperparameter_tuning.py # 超参数调优
-│   └── ...
-├── models/                     # 模型实现
-│   ├── linear_models.py        # 线性模型（Lasso/Ridge等）
-│   ├── tree_models.py          # 树模型（XGBoost/RF等）
-│   ├── neural_networks.py      # 神经网络（LSTM/GRU等）
-│   └── base_model.py           # 模型基类
-├── data/                       # 数据目录
-│   ├── raw/                    # 原始数据
-│   ├── processed/              # 预处理后数据
-│   └── features/               # 特征工程数据
-├── utils/                      # 工具函数
-│   ├── metrics.py              # 评估指标
-│   └── visualization.py        # 可视化
-├── saved_models/               # 保存的模型
-├── results/                    # 结果输出
-│   ├── predictions/            # 预测结果
-│   ├── figures/                # 图表
-│   └── logs/                   # 日志
-└── notebooks/                  # Jupyter笔记本
+├── code/
+│   ├── main.py                    # Direct 工作流统一入口
+│   ├── config.py                  # 路径、划分比例、默认训练配置
+│   ├── feature_config.yaml        # Direct 输入特征配置
+│   ├── feature_selector.py        # 按 YAML 选择特征
+│   ├── feature_engineering_direct.py
+│   ├── model_factory.py           # 轻量模型注册/创建
+│   ├── strategy_registry.py       # 预测策略注册与未来策略预留
+│   ├── train_direct.py            # 每小时独立训练和调参
+│   ├── evaluate_direct.py         # Direct 模型评估
+│   └── predict_direct.py          # 24 小时预测
+├── data/
+│   ├── raw/
+│   ├── processed/
+│   └── features/direct/           # H00-H23 独立特征文件
+├── saved_models/direct/           # H00-H23 独立模型
+├── results/
+│   ├── logs/
+│   ├── predictions/
+│   └── figures/
+├── utils/
+│   ├── metrics.py
+│   └── visualization.py
+└── Exploratory Analysis/          # 探索性分析 notebook
 ```
 
-## 环境要求
+## 策略说明
 
-- Python 3.8+
-- 主要依赖包：
-  - pandas, numpy
-  - scikit-learn
-  - torch (神经网络模型)
-  - xgboost (可选)
-  - epftoolbox (可选，LEAR模型)
+Direct 策略将 24 小时价格预测拆成 24 个独立监督学习任务：
 
-### 安装依赖
+```text
+H00: f_00(X_00) -> Price_H00
+H01: f_01(X_01) -> Price_H01
+...
+H23: f_23(X_23) -> Price_H23
+```
+
+这样每个小时可以单独选择特征、单独搜索超参数、单独保存模型和评估误差。旧的 global 多输出策略已删除，避免保留一个“接口上像 MIMO、内部仍近似 Direct”的冗余流程。
+
+当前代码只有 `direct` 策略可运行，但 CLI 和框架已预留策略层：
+
+```text
+direct      已实现：24 个独立单输出模型
+recursive  预留：一步模型迭代预测，后续步长使用前序预测值
+mimo        预留：真正联合输出 24 小时曲线的多输出模型
+```
+
+`code/strategy_registry.py` 负责登记策略状态。未来新增策略时，推荐新增独立文件，例如 `feature_engineering_recursive.py`、`train_recursive.py`、`evaluate_recursive.py`，而不是把不同策略混进 Direct 脚本。
+
+## 依赖
 
 ```bash
-pip install pandas numpy scikit-learn torch
-pip install xgboost  # 可选
-pip install epftoolbox  # 可选
+pip install pandas numpy scikit-learn pyyaml joblib
+pip install lightgbm xgboost
 ```
+
+`lightgbm` 和 `xgboost` 只在训练对应模型时需要。线性基线 `ridge` / `lasso` 只依赖 scikit-learn。
 
 ## 快速开始
 
-### 1. 数据准备
+在项目根目录或 `code/` 目录运行均可。
 
-将原始数据文件 `市场边界_出清价格总表.csv` 放入 `data/raw/` 目录。
-
-数据应包含以下字段：
-- 时间相关：日期、时段、小时、星期、月份等
-- 市场边界：系统负荷（日前/实时）、风电/光伏/水电出力、联络线计划等
-- 价格数据：平均出清价格（日前/实时）
-
-### 2. 数据预处理
-
-清洗原始数据，处理缺失值和异常值：
+### 1. 生成 Direct 特征
 
 ```bash
-cd code/
-python main.py preprocess
+python code/main.py features --strategy direct
 ```
 
-处理后的数据保存在 `data/processed/processed_data.csv`
+输入文件：
 
-### 3. 特征工程
-
-从清洗后的数据构建特征：
-
-```bash
-python main.py features
+```text
+data/processed/processed_data.csv
 ```
 
-生成的特征保存在 `data/features/features.csv`
+输出文件：
 
-### 4. 模型训练
+```text
+data/features/direct/features_H00.csv
+...
+data/features/direct/features_H23.csv
+```
 
-训练指定模型：
+### 2. 训练模型
 
 ```bash
-# 训练单个模型
-python main.py train --models Lasso
+# 训练 LightGBM，每小时随机搜索 20 组参数
+python code/main.py train --strategy direct --model lightgbm --n-iter 20
 
-# 训练多个模型
-python main.py train --models LinearRegression Ridge Lasso
+# 只训练指定小时
+python code/main.py train --strategy direct --model lightgbm --hours 0 8 12 18 --n-iter 20
 
-# 训练所有模型
-python main.py train
+# 使用默认参数，不做随机搜索
+python code/main.py train --strategy direct --model lightgbm --n-iter 0
 ```
 
 支持的模型：
 
-| 类别 | 模型名称 |
-|------|----------|
-| 线性模型 | LinearRegression, Ridge, Lasso, ElasticNet |
-| 树模型 | RandomForest, GradientBoosting, XGBoost |
-| 神经网络 | MLP, LSTM, GRU, Transformer |
-| 外部模型 | LEAR (epftoolbox) |
+```text
+lightgbm
+lightgbm_smape_probe
+xgboost
+random_forest
+ridge
+lasso
+```
 
-### 5. 模型评估
+`lightgbm_smape_probe` 是本轮 sMAPE 探针实验沉淀的 LightGBM 参数组：每个小时可以使用不同 objective / quantile alpha。它用于复现实验结果，不会覆盖标准 `lightgbm`。
+
+模型保存到：
+
+```text
+saved_models/direct/{model}/model_H00.pkl
+saved_models/direct/{model}/metadata_H00.json
+...
+```
+
+### 3. 评估模型
 
 ```bash
-# 评估所有已训练模型
-python main.py evaluate
-
-# 评估指定模型
-python main.py evaluate --models Lasso XGBoost
+python code/main.py evaluate --strategy direct --model lightgbm
 ```
 
-### 6. 进行预测
+评估报告输出到：
+
+```text
+results/logs/direct/{model}/evaluation_report.csv
+results/predictions/direct/{model}/test_predictions.csv
+```
+
+### 4. 预测
 
 ```bash
-python main.py predict --model Lasso --date 2025-04-01
+python code/main.py predict --strategy direct --model lightgbm --date 2025-03-26
 ```
 
-### 7. 超参数调优
+如果指定日期在已生成特征中不存在，预测脚本会使用最新一行特征，并在日志中提示。
+
+### 5. 一键流程
 
 ```bash
-python main.py tune --model XGBoost --method grid
+python code/main.py run-all --strategy direct --model lightgbm --n-iter 20
 ```
 
-调优方法可选：`grid`（网格搜索）、`random`（随机搜索）、`bayesian`（贝叶斯优化）
+## 特征控制
 
-## 详细使用指南
+所有模型输入特征由 `code/feature_config.yaml` 控制。配置支持精确列名和正则模式，例如：
 
-### 数据流程
-
-本项目采用分层数据管理策略，避免重复处理：
-
-```
-raw/原始数据.csv
-    ↓ preprocess
-processed/清洗后数据.csv
-    ↓ features
-features/特征数据.csv
-    ↓ train
-训练好的模型
+```yaml
+feature_groups:
+  direct_market_window:
+    patterns:
+      - "^(当前|滞后1h|未来1h)_市场_"
+      - "^市场变化_"
+      - "^市场日形态_"
 ```
 
-**关键特点：**
-- 预处理和特征工程只需执行一次
-- 训练时直接从features加载，速度极快
-- 每个阶段数据持久化，便于检查和分析
+给某个模型换特征时，只需要改 `model_features` 下对应模型的 `feature_groups`、`include_patterns` 或 `exclude_patterns`。
 
-### 特征说明
+当前特征工程不使用日前价格；市场输入来自预处理后的可用市场边界字段，并额外构造净负荷、新能源、市场化缺口、供需覆盖率和相邻小时爬坡等特征。
 
-系统自动生成以下特征：
-
-1. **时间特征**
-   - 月份、星期、是否周末
-   - 是否高峰时段（8-22点）
-   - 正弦/余弦编码的小时特征
-
-2. **滞后特征**
-   - 价格滞后1/2/3/7/14天
-
-3. **滚动统计特征**
-   - 7天滚动均值、标准差
-
-4. **目标变量**
-   - 24小时的价格序列（Price_H00 ~ Price_H23）
-
-### 模型配置
-
-在 `code/config.py` 中可以修改：
-
-```python
-# 数据划分比例
-split_config = {
-    'test_size_days': 28,      # 测试集28天
-    'validation_size_days': 14 # 验证集14天
-}
-
-# 特征工程配置
-feature_config = {
-    'lag_periods': [1, 2, 3, 7],
-    'rolling_windows': [7, 14, 30]
-}
-```
-
-### 评估指标
-
-- **MAE** (Mean Absolute Error): 平均绝对误差
-- **RMSE** (Root Mean Square Error): 均方根误差
-- **MAPE** (Mean Absolute Percentage Error): 平均绝对百分比误差
-- **sMAPE** (Symmetric MAPE): 对称平均绝对百分比误差
-
-## 命令行参考
-
-### 主程序命令
+## 推荐实验顺序
 
 ```bash
-# 数据预处理
-python main.py preprocess
-
-# 特征工程
-python main.py features
-
-# 训练模型
-python main.py train [--models MODEL1 MODEL2 ...]
-
-# 评估模型
-python main.py evaluate [--models MODEL1 MODEL2 ...] [--no-viz]
-
-# 预测
-python main.py predict --model MODEL [--date YYYY-MM-DD]
-
-# 超参数调优
-python main.py tune --model MODEL --method {grid,random,bayesian}
-
-# 列出所有可用模型
-python main.py list
+python code/main.py features --strategy direct
+python code/main.py train --strategy direct --model ridge --n-iter 0
+python code/main.py evaluate --strategy direct --model ridge
+python code/main.py train --strategy direct --model lightgbm --n-iter 20
+python code/main.py evaluate --strategy direct --model lightgbm
 ```
 
-### 示例工作流
+先用 `ridge` 快速验证数据和流程，再用 `lightgbm` 做主实验，会比较省时间。
+
+复现实验探针结果：
 
 ```bash
-# 完整流程示例
-cd code/
-
-# 1. 准备数据（只需一次）
-python main.py preprocess
-python main.py features
-
-# 2. 训练并评估线性模型
-python main.py train --models Lasso Ridge ElasticNet
-python main.py evaluate --models Lasso Ridge ElasticNet
-
-# 3. 训练树模型
-python main.py train --models RandomForest XGBoost
-python main.py evaluate --models RandomForest XGBoost
-
-# 4. 选择最佳模型进行预测
-python main.py predict --model XGBoost --date 2025-04-01
+python code/main.py train --strategy direct --model lightgbm_smape_probe --n-iter 0
+python code/main.py evaluate --strategy direct --model lightgbm_smape_probe
 ```
-
-## 常见问题
-
-### Q: 训练时提示特征数据不存在？
-A: 请先运行 `python main.py preprocess` 和 `python main.py features`
-
-### Q: 如何添加新的特征？
-A: 修改 `code/feature_engineering.py` 中的 `create_all_features()` 方法，然后重新运行 `python main.py features`
-
-### Q: 模型训练出现 ConvergenceWarning？
-A: 这是正常现象，表示模型在默认迭代次数内未完全收敛。已通过特征标准化优化，通常不影响最终效果。
-
-### Q: 如何调整训练/验证/测试集比例？
-A: 修改 `code/config.py` 中的 `split_config` 配置
-
-### Q: 支持自定义模型吗？
-A: 支持。继承 `models/base_model.py` 中的 `BaseModel` 类，实现 `fit()` 和 `predict()` 方法即可。
-
-## 项目文档
-
-- [电价预测实验方案](电价预测实验方案.md) - 详细的实验设计方案
-- [EPF工具箱使用文档](EPF工具箱使用文档.md) - LEAR模型使用说明
-- [电价预测数据分析报告](电价预测数据分析报告.md) - 数据分析报告
-
-## 开发团队
-
-本项目用于湖北省电力现货市场日前电价预测研究。
-
-## 许可证
-
-MIT License
