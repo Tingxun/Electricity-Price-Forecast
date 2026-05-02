@@ -37,9 +37,10 @@ class Config:
         }
 
         self.split_config = {
-            "train_ratio": 0.9,
+            "test_months": None,
             "cv_folds": 3,
             "random_seed": 42,
+            "rolling_min_train_months": 3,
         }
 
         self.training_config = {

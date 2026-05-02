@@ -1,34 +1,113 @@
 """
 Feature selection for Direct multi-step models.
 
-The selected feature set is controlled by ``feature_config.yaml``. Feature
-groups may contain exact feature names and regular-expression patterns, which
-keeps the configuration compact for hourly/generated column names.
+Feature groups may contain exact feature names and regular-expression patterns,
+which keeps the model-specific feature selection compact for hourly/generated
+column names.
 """
 
 import logging
 import re
-from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set
-
-import yaml
+from typing import Dict, Iterable, List, Set
 
 logger = logging.getLogger(__name__)
+
+
+FEATURE_CONFIG: Dict = {
+    "feature_groups": {
+        "direct_time": {
+            "features": ["月份", "星期", "是否周末", "季度"],
+        },
+        "direct_price_lag": {
+            "patterns": [
+                r"^滞后\d+天_H\d{2}_价格$",
+                r"^滞后2天_H\d{2}_(前1h|后1h)_价格$",
+                r"^历史价格_",
+            ],
+        },
+        "direct_market_window": {
+            "patterns": [
+                r"^(当前|滞后1h|未来1h)_市场_",
+                r"^市场变化_",
+                r"^市场日形态_",
+            ],
+        },
+        "direct_weather_window": {
+            "patterns": [
+                r"^(当前|滞后1h|未来1h)_气象_",
+            ],
+        },
+    },
+    "default": {
+        "description": "Direct 默认特征集",
+        "feature_groups": [
+            "direct_time",
+            "direct_price_lag",
+            "direct_market_window",
+            "direct_weather_window",
+        ],
+        "normalize": False,
+    },
+    "model_features": {
+        "lightgbm": {
+            "description": "LightGBM Direct 每小时独立模型",
+            "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window"],
+            "normalize": False,
+        },
+        "lightgbm_smape_probe": {
+            "description": "LightGBM Direct sMAPE探针参数组",
+            "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window"],
+            "normalize": False,
+        },
+        "xgboost": {
+            "description": "XGBoost Direct 每小时独立模型",
+            "feature_groups": [
+                "direct_time",
+                "direct_price_lag",
+                "direct_market_window",
+                "direct_weather_window",
+            ],
+            "normalize": False,
+        },
+        "random_forest": {
+            "description": "RandomForest Direct 每小时独立模型",
+            "feature_groups": [
+                "direct_time",
+                "direct_price_lag",
+                "direct_market_window",
+                "direct_weather_window",
+            ],
+            "normalize": False,
+        },
+        "ridge": {
+            "description": "Ridge Direct 线性基线",
+            "feature_groups": [
+                "direct_time",
+                "direct_price_lag",
+                "direct_market_window",
+                "direct_weather_window",
+            ],
+            "normalize": True,
+        },
+        "lasso": {
+            "description": "Lasso Direct 线性基线",
+            "feature_groups": [
+                "direct_time",
+                "direct_price_lag",
+                "direct_market_window",
+                "direct_weather_window",
+            ],
+            "normalize": True,
+        },
+    },
+}
 
 
 class FeatureSelector:
     """Select model-specific features from available columns."""
 
-    def __init__(self, config_path: Optional[str] = None):
-        if config_path is None:
-            config_path = Path(__file__).parent / "feature_config.yaml"
-
-        self.config_path = Path(config_path)
-        self.config = self._load_config()
-
-    def _load_config(self) -> Dict:
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+    def __init__(self, config: Dict | None = None):
+        self.config = config or FEATURE_CONFIG
 
     def get_model_features(self, model_name: str) -> Dict:
         model_features = self.config.get("model_features", {})
@@ -55,7 +134,7 @@ class FeatureSelector:
 
         result = sorted(selected)
         if not result:
-            raise ValueError(f"模型 {model_name} 没有选中任何可用特征，请检查 feature_config.yaml")
+            raise ValueError(f"模型 {model_name} 没有选中任何可用特征，请检查 FeatureSelector 配置")
 
         logger.info("模型 %s 选中特征数: %s", model_name, len(result))
         return result

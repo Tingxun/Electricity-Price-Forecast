@@ -8,14 +8,15 @@
 Electricity Price Forecast/
 ├── code/
 │   ├── main.py                    # Direct 工作流统一入口
-│   ├── config.py                  # 路径、划分比例、默认训练配置
-│   ├── feature_config.yaml        # Direct 输入特征配置
-│   ├── feature_selector.py        # 按 YAML 选择特征
+│   ├── config.py                  # 路径与默认训练配置
+│   ├── data_split.py              # 按自然月划分训练/测试
+│   ├── feature_selector.py        # 内置特征组与模型特征选择
 │   ├── feature_engineering_direct.py
 │   ├── model_factory.py           # 轻量模型注册/创建
 │   ├── strategy_registry.py       # 预测策略注册与未来策略预留
 │   ├── train_direct.py            # 每小时独立训练和调参
 │   ├── evaluate_direct.py         # Direct 模型评估
+│   ├── backtest_direct.py         # 月份滚动回测
 │   └── predict_direct.py          # 24 小时预测
 ├── data/
 │   ├── raw/
@@ -58,7 +59,7 @@ mimo        预留：真正联合输出 24 小时曲线的多输出模型
 ## 依赖
 
 ```bash
-pip install pandas numpy scikit-learn pyyaml joblib
+pip install pandas numpy scikit-learn joblib
 pip install lightgbm xgboost
 ```
 
@@ -99,6 +100,10 @@ python code/main.py train --strategy direct --model lightgbm --hours 0 8 12 18 -
 
 # 使用默认参数，不做随机搜索
 python code/main.py train --strategy direct --model lightgbm --n-iter 0
+
+# 指定一个或多个自然月作为测试集；不指定时默认使用最后一个可用月份
+python code/main.py train --strategy direct --model lightgbm --test-months 2025-03 --n-iter 0
+python code/main.py train --strategy direct --model lightgbm --test-months 2025-02 2025-03 --n-iter 0
 ```
 
 支持的模型：
@@ -126,6 +131,8 @@ saved_models/direct/{model}/metadata_H00.json
 
 ```bash
 python code/main.py evaluate --strategy direct --model lightgbm
+python code/main.py evaluate --strategy direct --model lightgbm --test-months 2025-03
+python code/main.py evaluate --strategy direct --model lightgbm --test-months 2025-02 2025-03
 ```
 
 评估报告输出到：
@@ -149,20 +156,38 @@ python code/main.py predict --strategy direct --model lightgbm --date 2025-03-26
 python code/main.py run-all --strategy direct --model lightgbm --n-iter 20
 ```
 
-## 特征控制
+### 6. 月份滚动回测
 
-所有模型输入特征由 `code/feature_config.yaml` 控制。配置支持精确列名和正则模式，例如：
+滚动回测采用扩展窗口：测试某个月时，只使用该月之前的全部月份训练。
 
-```yaml
-feature_groups:
-  direct_market_window:
-    patterns:
-      - "^(当前|滞后1h|未来1h)_市场_"
-      - "^市场变化_"
-      - "^市场日形态_"
+```bash
+python code/main.py backtest --strategy direct --model lightgbm --n-iter 0 --min-train-months 3
+python code/main.py backtest --strategy direct --model lightgbm_smape_probe --n-iter 0 --min-train-months 3
 ```
 
-给某个模型换特征时，只需要改 `model_features` 下对应模型的 `feature_groups`、`include_patterns` 或 `exclude_patterns`。
+输出文件：
+
+```text
+results/logs/direct/{model}/monthly_backtest.csv
+results/logs/direct/{model}/monthly_backtest_summary.csv
+results/logs/direct/{model}/monthly_backtest_overall.json
+```
+
+## 特征控制
+
+所有模型输入特征由 `code/feature_selector.py` 中的 `FEATURE_CONFIG` 控制。配置支持精确列名和正则模式，例如：
+
+```python
+"direct_market_window": {
+    "patterns": [
+        r"^(当前|滞后1h|未来1h)_市场_",
+        r"^市场变化_",
+        r"^市场日形态_",
+    ],
+}
+```
+
+给某个模型换特征时，修改 `FEATURE_CONFIG["model_features"]` 下对应模型的 `feature_groups`、`include_patterns` 或 `exclude_patterns`。
 
 当前特征工程不使用日前价格；市场输入来自预处理后的可用市场边界字段，并额外构造净负荷、新能源、市场化缺口、供需覆盖率和相邻小时爬坡等特征。
 

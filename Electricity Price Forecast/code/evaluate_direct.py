@@ -1,5 +1,5 @@
 """
-Evaluate trained Direct multi-step models on the held-out tail split.
+Evaluate trained Direct multi-step models on the held-out month split.
 """
 
 import argparse
@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from config import Config
+from data_split import split_by_months
 from feature_engineering_direct import DirectFeatureEngineer
 from feature_selector import FeatureSelector
 from model_factory import list_model_types
@@ -30,9 +31,10 @@ logger = logging.getLogger(__name__)
 class DirectEvaluator:
     """Evaluate one saved Direct model family."""
 
-    def __init__(self, config: Config, model_type: str):
+    def __init__(self, config: Config, model_type: str, test_months: Optional[List[str]] = None):
         self.config = config
         self.model_type = model_type
+        self.test_months = test_months
         self.model_dir = config.get_model_path("direct") / model_type
         self.feature_selector = FeatureSelector()
 
@@ -62,6 +64,7 @@ class DirectEvaluator:
                     "rmse": calculate_rmse(data["y_test"], y_pred),
                     "smape": calculate_smape(data["y_test"], y_pred),
                     "n_test": len(data["y_test"]),
+                    "test_period": data["split_info"]["test_period"],
                 }
             )
             predictions[hour] = y_pred
@@ -80,9 +83,12 @@ class DirectEvaluator:
         engineer = DirectFeatureEngineer()
         features_df, target_col = engineer.load_features(hour)
         feature_cols = self._load_feature_cols(hour, features_df, target_col)
+        metadata = self._load_metadata(hour)
+        metadata_months = metadata.get("split_info", {}).get("test_months")
+        test_months = self.test_months or metadata_months or self.config.split_config.get("test_months")
 
-        train_end = int(len(features_df) * self.config.split_config["train_ratio"])
-        test_df = features_df.iloc[train_end:].reset_index(drop=True)
+        split = split_by_months(features_df, "预测日期", test_months)
+        test_df = features_df.loc[split.test_mask].reset_index(drop=True)
         X_test = test_df[feature_cols]
 
         scaler_path = self.model_dir / f"scaler_H{hour:02d}.pkl"
@@ -94,13 +100,20 @@ class DirectEvaluator:
             "X_test": X_test,
             "y_test": test_df[target_col].to_numpy(),
             "test_dates": test_df["预测日期"],
+            "split_info": split.to_dict(),
         }
 
-    def _load_feature_cols(self, hour: int, features_df: pd.DataFrame, target_col: str) -> List[str]:
+    def _load_metadata(self, hour: int) -> Dict[str, Any]:
         metadata_path = self.model_dir / f"metadata_H{hour:02d}.json"
         if metadata_path.exists():
             with open(metadata_path, "r", encoding="utf-8") as f:
-                return json.load(f)["feature_cols"]
+                return json.load(f)
+        return {}
+
+    def _load_feature_cols(self, hour: int, features_df: pd.DataFrame, target_col: str) -> List[str]:
+        metadata = self._load_metadata(hour)
+        if metadata.get("feature_cols"):
+            return metadata["feature_cols"]
 
         candidate_features = [col for col in features_df.columns if col not in [target_col, "预测日期"]]
         numeric_features = features_df[candidate_features].select_dtypes(include=[np.number]).columns.tolist()
@@ -147,6 +160,7 @@ class DirectEvaluator:
 
         summary = {
             "model_type": self.model_type,
+            "test_period": str(results_df["test_period"].iloc[0]),
             "overall_mae": float(results_df["mae"].mean()),
             "overall_rmse": float(results_df["rmse"].mean()),
             "overall_smape": float(results_df["smape"].mean()),
@@ -172,13 +186,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Direct 多步模型评估")
     parser.add_argument("--model", default="lightgbm", choices=list_model_types(), help="基模型类型")
     parser.add_argument("--hours", type=int, nargs="+", default=None, help="指定评估小时")
+    parser.add_argument("--test-months", nargs="+", default=None, help="测试月份 YYYY-MM；可传多个，默认沿用模型训练月份或最后一个可用月份")
     return parser.parse_args()
 
 
 def main() -> None:
     setup_logging()
     args = parse_args()
-    evaluator = DirectEvaluator(Config(), args.model)
+    evaluator = DirectEvaluator(Config(), args.model, test_months=args.test_months)
     results = evaluator.evaluate(args.hours)
     print(results.to_string(index=False))
     print(

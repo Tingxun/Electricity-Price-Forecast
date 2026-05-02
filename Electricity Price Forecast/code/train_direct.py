@@ -25,6 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from config import Config
+from data_split import split_by_months
 from feature_engineering_direct import DirectFeatureEngineer
 from feature_selector import FeatureSelector
 from model_factory import create_model, get_default_params, get_param_space, list_model_types
@@ -37,13 +38,22 @@ logger = logging.getLogger(__name__)
 class DirectTrainer:
     """Train one independent model per forecast hour."""
 
-    def __init__(self, config: Config, model_type: str, n_iter: int, cv_folds: int):
+    def __init__(
+        self,
+        config: Config,
+        model_type: str,
+        n_iter: int,
+        cv_folds: int,
+        test_months: Optional[List[str]] = None,
+        model_dir: Optional[Path] = None,
+    ):
         self.config = config
         self.model_type = model_type
         self.n_iter = n_iter
         self.cv_folds = cv_folds
+        self.test_months = test_months or config.split_config.get("test_months")
         self.feature_selector = FeatureSelector()
-        self.model_dir = config.get_model_path("direct") / model_type
+        self.model_dir = model_dir or (config.get_model_path("direct") / model_type)
         self.model_dir.mkdir(parents=True, exist_ok=True)
 
     def prepare_hourly_data(self, hour: int) -> Dict[str, Any]:
@@ -57,19 +67,13 @@ class DirectTrainer:
         feature_cols = self.feature_selector.select_features_for_model(self.model_type, numeric_features)
         feature_info = self.feature_selector.get_model_feature_info(self.model_type)
 
-        dates = features_df["预测日期"].values
-        train_end = int(len(dates) * self.config.split_config["train_ratio"])
-        train_dates = dates[:train_end]
-        test_dates = dates[train_end:]
+        split = split_by_months(features_df, "预测日期", self.test_months)
 
-        train_mask = features_df["预测日期"].isin(train_dates)
-        test_mask = features_df["预测日期"].isin(test_dates)
-
-        X_train = features_df.loc[train_mask, feature_cols].reset_index(drop=True)
-        y_train = features_df.loc[train_mask, target_col].to_numpy()
-        X_test = features_df.loc[test_mask, feature_cols].reset_index(drop=True)
-        y_test = features_df.loc[test_mask, target_col].to_numpy()
-        test_dates_series = features_df.loc[test_mask, "预测日期"].reset_index(drop=True)
+        X_train = features_df.loc[split.train_mask, feature_cols].reset_index(drop=True)
+        y_train = features_df.loc[split.train_mask, target_col].to_numpy()
+        X_test = features_df.loc[split.test_mask, feature_cols].reset_index(drop=True)
+        y_test = features_df.loc[split.test_mask, target_col].to_numpy()
+        test_dates_series = features_df.loc[split.test_mask, "预测日期"].reset_index(drop=True)
 
         scaler = None
         if feature_info.get("normalize", False):
@@ -86,6 +90,7 @@ class DirectTrainer:
             "feature_cols": feature_cols,
             "target_col": target_col,
             "scaler": scaler,
+            "split_info": split.to_dict(),
         }
 
     def train_hour(self, hour: int) -> Dict[str, Any]:
@@ -128,6 +133,7 @@ class DirectTrainer:
             "feature_cols": data["feature_cols"],
             "best_params": best_params,
             "calibration": calibration,
+            "split_info": data["split_info"],
             "best_cv_smape": best_cv_smape,
             "test_mae": test_mae,
             "test_rmse": test_rmse,
@@ -312,13 +318,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hours", type=int, nargs="+", default=None, help="指定训练小时，如: --hours 0 8 12")
     parser.add_argument("--n-iter", type=int, default=20, help="每个小时的随机搜索次数；0 表示使用默认参数")
     parser.add_argument("--cv-folds", type=int, default=3, help="时间序列交叉验证折数")
+    parser.add_argument("--test-months", nargs="+", default=None, help="测试月份 YYYY-MM；可传多个，默认使用最后一个可用月份")
     return parser.parse_args()
 
 
 def main() -> None:
     setup_logging()
     args = parse_args()
-    trainer = DirectTrainer(Config(), args.model, args.n_iter, args.cv_folds)
+    trainer = DirectTrainer(Config(), args.model, args.n_iter, args.cv_folds, test_months=args.test_months)
     results = trainer.train(args.hours)
     print(results.to_string(index=False))
 
