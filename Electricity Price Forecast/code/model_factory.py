@@ -44,13 +44,41 @@ LIGHTGBM_SMAPE_PROBE_PARAMS: Dict[int, Dict[str, Any]] = {
     23: {"objective": "quantile", "alpha": 0.08, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
 }
 
-for params in LIGHTGBM_SMAPE_PROBE_PARAMS.values():
-    params.update({"subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42})
+
+LIGHTGBM_SMAPE_PROBE_V2_PARAMS: Dict[int, Dict[str, Any]] = {
+    hour: params.copy() for hour, params in LIGHTGBM_SMAPE_PROBE_PARAMS.items()
+}
+
+LIGHTGBM_SMAPE_PROBE_V2_PARAMS.update(
+    {
+        8: {"objective": "quantile", "alpha": 0.07, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
+        5: {"objective": "quantile", "alpha": 0.35, "n_estimators": 200, "learning_rate": 0.08, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20},
+        7: {"objective": "quantile", "alpha": 0.05, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20},
+        11: {"objective": "quantile", "alpha": 0.8, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 30},
+        12: {"objective": "quantile", "alpha": 0.72, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20},
+        13: {"objective": "quantile", "alpha": 0.8, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 30},
+        14: {"objective": "quantile", "alpha": 0.76, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 15, "max_depth": 6, "min_child_samples": 10},
+        15: {"objective": "regression", "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
+        16: {"objective": "regression", "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20},
+        22: {"objective": "quantile", "alpha": 0.2, "n_estimators": 120, "learning_rate": 0.03, "num_leaves": 15, "max_depth": 6, "min_child_samples": 10},
+        23: {"objective": "quantile", "alpha": 0.08, "n_estimators": 300, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 30},
+    }
+)
+
+
+def _with_common_lgbm_params(hourly_params: Dict[int, Dict[str, Any]]) -> None:
+    for params in hourly_params.values():
+        params.update({"subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42})
+
+
+_with_common_lgbm_params(LIGHTGBM_SMAPE_PROBE_PARAMS)
+_with_common_lgbm_params(LIGHTGBM_SMAPE_PROBE_V2_PARAMS)
 
 
 DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
     "lightgbm": LIGHTGBM_DEFAULT_PARAMS,
     "lightgbm_smape_probe": LIGHTGBM_DEFAULT_PARAMS,
+    "lightgbm_smape_probe_v2": LIGHTGBM_DEFAULT_PARAMS,
     "xgboost": {
         "n_estimators": 200,
         "learning_rate": 0.05,
@@ -91,6 +119,7 @@ PARAM_SPACES: Dict[str, Dict[str, List[Any]]] = {
         "random_state": [42],
     },
     "lightgbm_smape_probe": {},
+    "lightgbm_smape_probe_v2": {},
     "xgboost": {
         "n_estimators": [100, 200, 300, 500],
         "learning_rate": [0.01, 0.03, 0.05, 0.08, 0.1],
@@ -129,6 +158,8 @@ def get_default_params(model_type: str, hour: int | None = None) -> Dict[str, An
     _validate_model_type(model_type)
     if model_type == "lightgbm_smape_probe" and hour in LIGHTGBM_SMAPE_PROBE_PARAMS:
         return LIGHTGBM_SMAPE_PROBE_PARAMS[hour].copy()
+    if model_type == "lightgbm_smape_probe_v2" and hour in LIGHTGBM_SMAPE_PROBE_V2_PARAMS:
+        return LIGHTGBM_SMAPE_PROBE_V2_PARAMS[hour].copy()
     return DEFAULT_PARAMS[model_type].copy()
 
 
@@ -141,7 +172,7 @@ def create_model(model_type: str, params: Dict[str, Any]):
     _validate_model_type(model_type)
     params = params.copy()
 
-    if model_type in {"lightgbm", "lightgbm_smape_probe"}:
+    if model_type in {"lightgbm", "lightgbm_smape_probe", "lightgbm_smape_probe_v2"}:
         from lightgbm import LGBMRegressor
 
         return LGBMRegressor(verbose=-1, **params)

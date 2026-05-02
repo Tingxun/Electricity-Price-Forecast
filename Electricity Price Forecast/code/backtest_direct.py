@@ -113,7 +113,7 @@ class DirectMonthlyBacktester:
         features_df, target_col = self.engineer.load_features(hour)
         candidate_features = [col for col in features_df.columns if col not in [target_col, "预测日期"]]
         numeric_features = features_df[candidate_features].select_dtypes(include=[np.number]).columns.tolist()
-        feature_cols = self.feature_selector.select_features_for_model(self.model_type, numeric_features)
+        feature_cols = self.feature_selector.select_features_for_model(self.model_type, numeric_features, hour=hour)
         feature_info = self.feature_selector.get_model_feature_info(self.model_type)
         split = split_by_months(features_df, "预测日期", [test_month])
 

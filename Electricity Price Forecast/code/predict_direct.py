@@ -102,7 +102,7 @@ class DirectPredictor:
 
         candidate_features = [col for col in features_df.columns if col not in [target_col, "预测日期"]]
         numeric_features = features_df[candidate_features].select_dtypes(include=[np.number]).columns.tolist()
-        return self.feature_selector.select_features_for_model(self.model_type, numeric_features)
+        return self.feature_selector.select_features_for_model(self.model_type, numeric_features, hour=hour)
 
     def _load_calibration(self, hour: int) -> Dict[str, float]:
         metadata_path = self.model_dir / f"metadata_H{hour:02d}.json"

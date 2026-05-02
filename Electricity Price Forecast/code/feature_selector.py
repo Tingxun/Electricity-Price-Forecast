@@ -59,6 +59,17 @@ FEATURE_CONFIG: Dict = {
             "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window"],
             "normalize": False,
         },
+        "lightgbm_smape_probe_v2": {
+            "description": "LightGBM Direct sMAPE探针参数组v2",
+            "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window"],
+            "hourly_overrides": {
+                8: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
+                12: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
+                13: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
+                16: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
+            },
+            "normalize": False,
+        },
         "xgboost": {
             "description": "XGBoost Direct 每小时独立模型",
             "feature_groups": [
@@ -113,8 +124,29 @@ class FeatureSelector:
         model_features = self.config.get("model_features", {})
         return model_features.get(model_name, self.config.get("default", {}))
 
-    def select_features_for_model(self, model_name: str, available_features: List[str]) -> List[str]:
+    def select_features_for_model(
+        self,
+        model_name: str,
+        available_features: List[str],
+        hour: int | None = None,
+        feature_groups: List[str] | None = None,
+    ) -> List[str]:
         model_config = self.get_model_features(model_name)
+        if hour is not None:
+            hour_override = model_config.get("hourly_overrides", {}).get(hour)
+            if hour_override is None:
+                hour_override = model_config.get("hourly_overrides", {}).get(str(hour))
+            if hour_override:
+                model_config = {**model_config, **hour_override}
+        if feature_groups is not None:
+            model_config = {**model_config, "feature_groups": feature_groups}
+
+        return self._select_features(model_name, model_config, available_features)
+
+    def select_features_from_groups(self, feature_groups: List[str], available_features: List[str]) -> List[str]:
+        return self._select_features("custom", {"feature_groups": feature_groups}, available_features)
+
+    def _select_features(self, model_name: str, model_config: Dict, available_features: List[str]) -> List[str]:
         selected: Set[str] = set()
 
         for group_name in model_config.get("feature_groups", []):

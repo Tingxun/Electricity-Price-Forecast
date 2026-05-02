@@ -112,6 +112,22 @@ def backtest_mode(config: Config, args: argparse.Namespace) -> None:
     ok = results[results["status"] == "success"]
     print(f"\nAverage sMAPE={ok['smape'].mean():.2f}%")
 
+def optimize_probe_mode(config: Config, args: argparse.Namespace) -> None:
+    from probe_optimizer import LightGBMProbeOptimizer
+
+    results = LightGBMProbeOptimizer(
+        config=config,
+        model_type=args.model,
+        test_months=args.test_months,
+        max_candidates=args.max_candidates,
+        local_alpha_radius=args.local_alpha_radius,
+        local_alpha_step=args.local_alpha_step,
+        broad_alpha_step=args.broad_alpha_step,
+    ).optimize(args.hours)
+    ok = results[results["status"] == "success"]
+    best = ok.sort_values(["hour", "smape"]).groupby("hour", as_index=False).head(1)
+    print(best[["hour", "feature_variant", "smape", "mae", "rmse"]].to_string(index=False))
+    print(f"\nBest-combined average sMAPE={best['smape'].mean():.2f}%")
 
 def list_mode() -> None:
     print("可用 Direct 基模型:")
@@ -158,6 +174,15 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_parser.add_argument("--start-month", default=None, help="首个测试月份 YYYY-MM")
     backtest_parser.add_argument("--end-month", default=None, help="最后测试月份 YYYY-MM")
 
+    optimize_parser = subparsers.add_parser("optimize-probe", help="LightGBM sMAPE 探针参数搜索")
+    optimize_parser.add_argument("--model", default="lightgbm_smape_probe_v2", choices=list_model_types(), help="LightGBM 探针模型")
+    optimize_parser.add_argument("--hours", type=int, nargs="+", default=None, help="指定搜索小时")
+    optimize_parser.add_argument("--test-months", nargs="+", default=None, help="测试月份 YYYY-MM")
+    optimize_parser.add_argument("--max-candidates", type=int, default=80, help="每小时最大候选参数组数")
+    optimize_parser.add_argument("--local-alpha-radius", type=float, default=0.10, help="局部 alpha 搜索半径")
+    optimize_parser.add_argument("--local-alpha-step", type=float, default=0.02, help="局部 alpha 搜索步长")
+    optimize_parser.add_argument("--broad-alpha-step", type=float, default=0.05, help="短板小时 alpha 全局搜索步长")
+
     subparsers.add_parser("list", help="列出可用 Direct 基模型")
 
     run_all_parser = subparsers.add_parser("run-all", help="生成特征、训练并评估")
@@ -188,6 +213,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             predict_mode(config, args)
         elif args.mode == "backtest":
             backtest_mode(config, args)
+        elif args.mode == "optimize-probe":
+            optimize_probe_mode(config, args)
         elif args.mode == "list":
             list_mode()
         elif args.mode == "run-all":
