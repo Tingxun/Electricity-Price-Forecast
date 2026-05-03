@@ -147,12 +147,11 @@ class DirectTrainer:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
 
         logger.info(
-            "H%02d 完成: CV_sMAPE=%.4f, Test_MAE=%.4f, sMAPE=%.2f%%, AccRate=%.2f%%",
+            "H%02d 完成: CV_sMAPE=%.4f, Test_MAE=%.4f, sMAPE=%.2f%%",
             hour,
             best_cv_smape,
             test_mae,
             test_smape,
-            test_acc_rate,
         )
         return {
             "hour": hour,
@@ -300,7 +299,6 @@ class DirectTrainer:
         report_json = self.model_dir / "training_report.json"
         results_df.to_csv(report_csv, index=False, encoding="utf-8-sig")
         results_df.to_json(report_json, orient="records", force_ascii=False, indent=2)
-        logger.info("训练报告已保存: %s", report_csv)
 
 
 def setup_logging() -> None:

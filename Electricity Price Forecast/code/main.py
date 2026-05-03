@@ -64,7 +64,6 @@ def train_mode(config: Config, args: argparse.Namespace) -> None:
         test_months=args.test_months,
     )
     results = trainer.train(args.hours)
-    print(results.to_string(index=False))
 
 
 def evaluate_mode(config: Config, args: argparse.Namespace) -> None:
