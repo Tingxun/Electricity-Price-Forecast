@@ -72,13 +72,13 @@ def evaluate_mode(config: Config, args: argparse.Namespace) -> None:
 
     from evaluate_direct import DirectEvaluator
 
-    results = DirectEvaluator(config, args.model, test_months=args.test_months).evaluate(args.hours)
+    results, overall_acc_rate = DirectEvaluator(config, args.model, test_months=args.test_months).evaluate(args.hours)
     print(results.to_string(index=False))
     print(
-        f"\nAverage MAE={results['mae'].mean():.4f}, "
+        f"\nMAE={results['mae'].mean():.4f}, "
         f"RMSE={results['rmse'].mean():.4f}, "
         f"sMAPE={results['smape'].mean():.2f}%, "
-        f"AccRate={results['acc_rate'].mean():.2f}%"
+        f"AccRate={results['acc_rate'].mean():.2f}%, "
     )
 
 

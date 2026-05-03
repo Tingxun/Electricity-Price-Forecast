@@ -22,7 +22,7 @@ from data_split import split_by_months
 from feature_engineering_direct import DirectFeatureEngineer
 from feature_selector import FeatureSelector
 from model_factory import list_model_types
-from utils.metrics import calculate_mae, calculate_rmse, calculate_smape, calculate_accuracy_rate
+from utils.metrics import calculate_mae, calculate_rmse, calculate_smape, calculate_accuracy_rate, calculate_sape
 
 
 logger = logging.getLogger(__name__)
@@ -77,8 +77,13 @@ class DirectEvaluator:
         if results_df.empty:
             raise FileNotFoundError(f"未找到可评估的 Direct 模型: {self.model_dir}")
 
-        self._save_outputs(results_df, predictions, actuals, dates)
-        return results_df
+        # 计算整体达标率（所有小时汇总）
+        all_actuals = np.concatenate([actuals[h] for h in sorted(actuals)])
+        all_preds = np.concatenate([predictions[h] for h in sorted(predictions)])
+        overall_acc_rate = calculate_accuracy_rate(all_actuals, all_preds, threshold=20.0)
+
+        self._save_outputs(results_df, predictions, actuals, dates, overall_acc_rate)
+        return results_df, overall_acc_rate
 
     def _prepare_data(self, hour: int) -> Dict[str, Any]:
         engineer = DirectFeatureEngineer()
@@ -144,6 +149,7 @@ class DirectEvaluator:
         predictions: Dict[int, np.ndarray],
         actuals: Dict[int, np.ndarray],
         dates: pd.Series,
+        overall_acc_rate: float,
     ) -> None:
         log_dir = self.config.get_result_path("logs") / "direct" / self.model_type
         pred_dir = self.config.get_result_path("predictions") / "direct" / self.model_type
@@ -165,7 +171,7 @@ class DirectEvaluator:
             "overall_mae": float(results_df["mae"].mean()),
             "overall_rmse": float(results_df["rmse"].mean()),
             "overall_smape": float(results_df["smape"].mean()),
-            "overall_acc_rate": float(results_df["acc_rate"].mean()),
+            "overall_acc_rate": overall_acc_rate,
         }
         with open(log_dir / "summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
