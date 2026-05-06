@@ -1,6 +1,6 @@
 # lightgbm_smape_probe 优化技术文档
 
-本文记录 `lightgbm_smape_probe` 从 2025-03 平均 sMAPE 约 28.44% 优化到 24.58% 的完整技术路径。当前正式模型和 `lightgbm_smape_probe_midday_v3` 使用同一套已验收配置；前者用于正式训练评估，后者用于复现实验版本。
+本文记录 `lightgbm_smape_probe` 从 2025-03 平均 sMAPE 约 28.44% 优化到 24.58% 的完整技术路径。当前正式模型和 `lightgbm_smape_probe_midday_v3` 使用同一套已验收配置；前者用于正式训练评估，后者用于复现实验和优化版本。
 
 ## 1. 目标与约束
 
