@@ -55,7 +55,20 @@ MIDDAY_WEATHER_AGG_FEATURE_GROUPS = [
     "direct_midday_regime",
     "direct_midday_weather_agg",
 ]
+CALENDAR_FEATURE_GROUPS = [
+    MIDDAY_TIME_FEATURE_GROUP,
+    "direct_price_lag",
+    "direct_market_window",
+]
+CALENDAR_WEATHER_FEATURE_GROUPS = [
+    MIDDAY_TIME_FEATURE_GROUP,
+    "direct_price_lag",
+    "direct_market_window",
+    "direct_weather_window",
+]
 MIDDAY_HOURS = set(range(8, 16))
+NON_MIDDAY_EXPERIMENT_HOURS = set(range(0, 8)) | set(range(16, 24))
+NON_MIDDAY_TWO_STAGE_HOURS = {16, 22, 23}
 WEAK_HOURS = set(range(8, 17)) | {22, 23}
 
 OBJECTIVES = ["regression", "regression_l1", "huber", "quantile"]
@@ -122,17 +135,24 @@ class LightGBMProbeOptimizer:
         data_by_variant = {
             "default": self._prepare_data(hour, DEFAULT_FEATURE_GROUPS),
         }
-        if hour in WEAK_HOURS:
+        if hour in WEAK_HOURS or hour in NON_MIDDAY_EXPERIMENT_HOURS:
             data_by_variant["weather"] = self._prepare_data(hour, WEATHER_FEATURE_GROUPS)
+        if hour in NON_MIDDAY_EXPERIMENT_HOURS:
+            data_by_variant["calendar"] = self._prepare_data(hour, CALENDAR_FEATURE_GROUPS)
+            data_by_variant["calendar_weather"] = self._prepare_data(hour, CALENDAR_WEATHER_FEATURE_GROUPS)
         if hour in MIDDAY_HOURS:
             data_by_variant["midday_regime"] = self._prepare_data(hour, MIDDAY_FEATURE_GROUPS)
             data_by_variant["midday_regime_weather"] = self._prepare_data(hour, MIDDAY_WEATHER_AGG_FEATURE_GROUPS)
             data_by_variant["midday_regime_weighted"] = self._prepare_data(hour, MIDDAY_FEATURE_GROUPS)
 
         base_params = get_default_params(self.model_type, hour=hour)
-        candidates = self._build_candidates(base_params, hour in WEAK_HOURS)
         if hour in MIDDAY_HOURS:
+            candidates = self._build_candidates(base_params, hour in WEAK_HOURS)
             candidates = self._build_midday_candidates(candidates, base_params)
+        elif hour in NON_MIDDAY_EXPERIMENT_HOURS:
+            candidates = self._build_non_midday_candidates(base_params, hour)
+        else:
+            candidates = self._build_candidates(base_params, hour in WEAK_HOURS)
         rows = []
 
         for feature_variant, data in data_by_variant.items():
@@ -253,6 +273,81 @@ class LightGBMProbeOptimizer:
                             }
                         )
                         result.append(params)
+
+        return self._dedupe_candidates(result)[: self.max_candidates]
+
+    def _build_non_midday_candidates(self, base_params: Dict[str, Any], hour: int) -> List[Dict[str, Any]]:
+        """Compact search space for already-strong non-midday hours."""
+        result: List[Dict[str, Any]] = []
+        base = self._normalize_params(base_params)
+        current_alpha = float(base_params.get("alpha", 0.5))
+
+        result.append(base)
+        for objective in OBJECTIVES:
+            params = {**base_params, "objective": objective}
+            if objective == "quantile":
+                params["alpha"] = current_alpha
+            result.append(self._normalize_params(params))
+
+        for alpha in self._alpha_grid(current_alpha, min(self.local_alpha_radius, 0.08), max(self.local_alpha_step, 0.02)):
+            result.append(self._normalize_params({**base_params, "objective": "quantile", "alpha": alpha}))
+
+        for profile in TREE_PROFILES[:3]:
+            result.append(self._normalize_params({**base_params, **profile}))
+            result.append(self._normalize_params({**base_params, **profile, "objective": "regression"}))
+            result.append(self._normalize_params({**base_params, **profile, "objective": "regression_l1"}))
+
+        weighted_seeds = self._dedupe_candidates(result[:8])
+        for params in weighted_seeds:
+            for mode in ["light", "default", "strong"]:
+                weighted = params.copy()
+                weighted["sample_weight_mode"] = mode
+                result.append(weighted)
+
+        if hour in NON_MIDDAY_TWO_STAGE_HOURS:
+            two_stage_profiles = self._dedupe_candidates(
+                [
+                    base,
+                    self._normalize_params(
+                        {
+                            **base_params,
+                            "objective": "regression_l1",
+                            "n_estimators": 200,
+                            "learning_rate": 0.05,
+                            "num_leaves": 31,
+                            "max_depth": 6,
+                            "min_child_samples": 20,
+                        }
+                    ),
+                    self._normalize_params(
+                        {
+                            **base_params,
+                            "objective": "quantile",
+                            "alpha": min(0.9, max(0.1, current_alpha)),
+                            "n_estimators": 300,
+                            "learning_rate": 0.03,
+                            "num_leaves": 31,
+                            "max_depth": 6,
+                            "min_child_samples": 10,
+                        }
+                    ),
+                ]
+            )
+            for profile in two_stage_profiles:
+                for threshold in [80, 120]:
+                    for prob_threshold in [0.35, 0.5]:
+                        for blend in [0.4, 0.7]:
+                            params = profile.copy()
+                            params.update(
+                                {
+                                    "model_kind": "two_stage_low_price",
+                                    "low_price_threshold": threshold,
+                                    "prob_threshold": prob_threshold,
+                                    "blend": blend,
+                                    "sample_weight_mode": "default",
+                                }
+                            )
+                            result.append(params)
 
         return self._dedupe_candidates(result)[: self.max_candidates]
 
@@ -388,7 +483,7 @@ def setup_logging() -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Optimize LightGBM sMAPE probe parameters on monthly holdout")
-    parser.add_argument("--model", default="lightgbm_smape_probe_midday_v3", choices=list_model_types())
+    parser.add_argument("--model", default="lightgbm_smape_probe_v3", choices=list_model_types())
     parser.add_argument("--hours", type=int, nargs="+", default=None)
     parser.add_argument("--test-months", nargs="+", default=None)
     parser.add_argument("--max-candidates", type=int, default=80)

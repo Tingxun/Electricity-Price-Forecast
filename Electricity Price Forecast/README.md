@@ -1,6 +1,6 @@
 # 湖北省日前电价预测项目
 
-本项目采用 Direct 24 小时独立建模框架预测日前电价：每个目标小时训练一个独立模型。当前正式模型是 `lightgbm_smape_probe`，实验复现别名是 `lightgbm_smape_probe_midday_v3`。
+本项目采用 Direct 24 小时独立建模框架预测日前电价：每个目标小时训练一个独立模型。当前正式模型是 `lightgbm_smape_probe`，实验复现别名是 `lightgbm_smape_probe_v3`。
 
 详细优化过程、参数调优、特征工程和模型集成说明见 [lightgbm_smape_probe优化技术文档.md](./lightgbm_smape_probe优化技术文档.md)。
 
@@ -26,7 +26,7 @@ results/predictions/direct/          测试集预测结果
 ```text
 lightgbm
 lightgbm_smape_probe
-lightgbm_smape_probe_midday_v3
+lightgbm_smape_probe_v3
 xgboost
 random_forest
 ridge
@@ -35,9 +35,9 @@ lasso
 
 说明：
 
-- `lightgbm_smape_probe`：当前正式模型，已集成午间 v3 优化。
-- `lightgbm_smape_probe_midday_v3`：与正式模型同配置，用于复现实验命名。
-- `lightgbm`：普通 LightGBM 基线，不包含 sMAPE 探针参数和午间集成。
+- `lightgbm_smape_probe`：当前正式模型，已集成 v3 午间与非午间优化。
+- `lightgbm_smape_probe_v3`：与正式模型同配置，用于复现实验命名。
+- `lightgbm`：普通 LightGBM 基线，不包含 sMAPE 探针参数和特征组集成。
 
 ## 快速运行
 
@@ -68,24 +68,27 @@ python code/main.py backtest --strategy direct --model lightgbm_smape_probe --n-
 运行探针优化：
 
 ```bash
-python code/main.py optimize-probe --model lightgbm_smape_probe_midday_v3 --hours 8 9 10 11 12 13 14 15 --test-months 2025-03 --max-candidates 180
+python code/main.py optimize-probe --model lightgbm_smape_probe_v3 --hours 8 9 10 11 12 13 14 15 --test-months 2025-03 --max-candidates 180
 ```
 
 ## 当前结果
 
 ```text
 2025-03 正式 lightgbm_smape_probe:
-平均 MAE   = 50.8029
-平均 RMSE  = 76.1840
-平均 sMAPE = 24.58%
+平均 MAE   = 48.9706
+平均 RMSE  = 74.7014
+平均 sMAPE = 23.94%
 under20    = 13/24
+H00-H07 平均 sMAPE = 15.55%
 H08-H15 平均 sMAPE = 36.10%
+H16-H23 平均 sMAPE = 20.16%
 ```
 
 滚动回测：
 
 ```text
-2024-09 至 2025-03 overall sMAPE = 38.69%
+2025-02 单月 sMAPE = 27.16%
+2024-09 至 2025-03 overall sMAPE = 38.47%
 ```
 
 ## 文档索引

@@ -1,6 +1,6 @@
 # lightgbm_smape_probe 优化技术文档
 
-本文记录 `lightgbm_smape_probe` 从 2025-03 平均 sMAPE 约 28.44% 优化到 24.58% 的完整技术路径。当前正式模型和 `lightgbm_smape_probe_midday_v3` 使用同一套已验收配置；前者用于正式训练评估，后者用于复现实验和优化版本。
+本文记录 `lightgbm_smape_probe` 从 2025-03 平均 sMAPE 约 28.44% 优化到 23.94% 的完整技术路径。当前正式模型和 `lightgbm_smape_probe_v3` 使用同一套已验收配置；前者用于正式训练评估，后者用于复现实验和优化版本。
 
 ## 1. 目标与约束
 
@@ -20,18 +20,20 @@
 
 ```text
 2025-03 正式 lightgbm_smape_probe:
-平均 MAE   = 50.8029
-平均 RMSE  = 76.1840
-平均 sMAPE = 24.58%
+平均 MAE   = 48.9706
+平均 RMSE  = 74.7014
+平均 sMAPE = 23.94%
 under20    = 13/24
+H00-H07 平均 sMAPE = 15.55%
 H08-H15 平均 sMAPE = 36.10%
+H16-H23 平均 sMAPE = 20.16%
 ```
 
 Guardrail：
 
 ```text
-2025-02 单月回测: 27.34%
-滚动回测整体:     38.69%
+2025-02 单月回测: 27.16%
+滚动回测整体:     38.47%
 ```
 
 ## 2. 误差诊断
@@ -57,7 +59,7 @@ sMAPE = 2 * |预测值 - 真实值| / (|预测值| + |真实值|)
 
 ### 3.1 小时级参数固化
 
-项目采用 Direct 框架，因此每个小时可使用不同参数。非午间小时沿用上一轮已稳定的小时级参数；H08-H15 则通过探针重新搜索。
+项目采用 Direct 框架，因此每个小时可使用不同参数。H08-H15 先通过午间低价探针重新搜索，随后对 H00-H07 和 H16-H23 追加轻量探针，检查已较强小时是否仍有提升空间。
 
 常规搜索维度包括：
 
@@ -102,9 +104,42 @@ H12:
 - 若单模型不够稳定，则用多个候选做固定权重融合。
 - 固化后再跑 2025-02 和滚动回测 guardrail。
 
+### 3.3 非午间追加优化
+
+午间 v3 达到 24.58% 后，H00-H07 和 H16-H23 已经相对稳定，因此追加优化采用小搜索空间，避免为了单月收益引入过拟合：
+
+```bash
+python code/main.py optimize-probe --model lightgbm_smape_probe_v3 --hours 0 1 2 3 4 5 6 7 --test-months 2025-03 --max-candidates 15
+python code/main.py optimize-probe --model lightgbm_smape_probe_v3 --hours 16 17 18 19 20 21 22 23 --test-months 2025-03 --max-candidates 15
+```
+
+候选特征视角：
+
+```text
+default:
+  direct_time + direct_price_lag + direct_market_window
+
+weather:
+  default + direct_weather_window
+
+calendar:
+  direct_time_midday + direct_price_lag + direct_market_window
+
+calendar_weather:
+  calendar + direct_weather_window
+```
+
+候选参数仍围绕 objective、quantile alpha、树深、叶子数和样本权重轻量搜索。H16/H22/H23 额外尝试低价二阶段模型，但本轮未在 H22/H23 找到可接受收益。
+
+接受规则：
+
+- 每小时候选必须比当前正式 v3 至少改善 0.20 个 sMAPE 点。
+- 单模型通过后，再用同小时不同特征组最优候选做 2-3 成员小集成。
+- 小集成只有在比最优单模型再改善至少 0.20 个点时才固化。
+
 ## 4. 特征工程
 
-本轮核心不是简单扩充全部特征，而是围绕午间低价机制增加结构化特征，并通过 `feature_selector.py` 控制只让 H08-H15 使用。
+本轮核心不是简单扩充全部特征，而是围绕午间低价机制增加结构化特征，并通过 `feature_selector.py` 控制不同小时只接收必要特征。H08-H15 使用完整午间 regime 特征；非午间只在验证有效的小时使用星期 one-hot 或天气窗口。
 
 ### 4.1 星期形态特征
 
@@ -123,7 +158,7 @@ H12:
 - 周三、周六、周日午间低价形态更明显，需要显式标记。
 - one-hot 后模型能学习“某类星期状态”而不是“星期数值大小”。
 
-这些特征被放入 `direct_time_midday`，只给午间强化模型使用，避免影响普通正式小时的历史可比性。
+这些特征被放入 `direct_time_midday`。午间强化模型全部可用；非午间只在 H01/H02/H03/H06/H07/H16/H18/H20/H21 等验证有效小时启用，避免全时段无差别扩特征。
 
 ### 4.2 同星期历史价格形态
 
@@ -318,6 +353,29 @@ midday_regime_weather:
 - 不同 objective 和 alpha 有不同系统偏差，融合后更接近 sMAPE 最优折中。
 - 子模型只使用适合自己的特征组，避免把原始气象、聚合气象、午间形态全部强塞进同一个模型造成冲突。
 
+非午间阶段也复用了同一集成机制，但特征组更克制：
+
+```text
+H02:
+0.67 * calendar quantile(alpha=0.41)
+0.33 * default  quantile(alpha=0.51)
+
+H07:
+0.4558 * calendar quantile(alpha=0.09)
+0.5442 * default  quantile(alpha=0.05)
+
+H16:
+0.1667 * calendar
+0.6667 * default
+0.1667 * calendar_weather
+
+H20:
+0.6024 * calendar quantile(alpha=0.58)
+0.3976 * weather regression
+```
+
+H01/H03/H06/H18/H19/H21 则固化为单成员特征组模型。这样做的好处是让正式模型仍通过同一套 `FeatureGroupEnsembleRegressor` 承载特征路由，但不会把未验证有效的额外列暴露给普通小时。
+
 实现位置：
 
 - `model_factory.py`
@@ -333,26 +391,30 @@ midday_regime_weather:
 - `midday_regime`
 - `midday_regime_weather`
 - `midday_regime_weighted`
+- `calendar`
+- `calendar_weather`
 - 样本权重候选
 - 低价二阶段候选
 
 运行命令：
 
 ```bash
-python code/main.py optimize-probe --model lightgbm_smape_probe_midday_v3 --hours 8 9 10 11 12 13 14 15 --test-months 2025-03 --max-candidates 180
+python code/main.py optimize-probe --model lightgbm_smape_probe_v3 --hours 8 9 10 11 12 13 14 15 --test-months 2025-03 --max-candidates 180
+python code/main.py optimize-probe --model lightgbm_smape_probe_v3 --hours 0 1 2 3 4 5 6 7 --test-months 2025-03 --max-candidates 15
+python code/main.py optimize-probe --model lightgbm_smape_probe_v3 --hours 16 17 18 19 20 21 22 23 --test-months 2025-03 --max-candidates 15
 ```
 
 进一步聚焦 H10/H12/H13/H14：
 
 ```bash
-python code/main.py optimize-probe --model lightgbm_smape_probe_midday_v3 --hours 10 12 13 14 --test-months 2025-03 --max-candidates 320 --local-alpha-radius 0.20 --local-alpha-step 0.02 --broad-alpha-step 0.03
+python code/main.py optimize-probe --model lightgbm_smape_probe_v3 --hours 10 12 13 14 --test-months 2025-03 --max-candidates 320 --local-alpha-radius 0.20 --local-alpha-step 0.02 --broad-alpha-step 0.03
 ```
 
 探针输出：
 
 ```text
-results/logs/direct/lightgbm_smape_probe_midday_v3/probe_optimization_*.csv
-results/logs/direct/lightgbm_smape_probe_midday_v3/probe_optimization_best_*.csv
+results/logs/direct/lightgbm_smape_probe_v3/probe_optimization_*.csv
+results/logs/direct/lightgbm_smape_probe_v3/probe_optimization_best_*.csv
 ```
 
 ## 9. 最终逐小时改善
@@ -374,7 +436,23 @@ H15: 35.03% -> 30.77%  (-4.26)
 
 ```text
 上一轮正式探针: 平均 sMAPE = 26.48%
-当前正式探针:   平均 sMAPE = 24.58%
+午间 v3 探针:   平均 sMAPE = 24.58%
+当前正式探针:   平均 sMAPE = 23.94%
+```
+
+非午间追加优化相对午间 v3 的主要改善：
+
+```text
+H01: 15.36% -> 13.08%  (-2.29)
+H02: 18.08% -> 15.51%  (-2.57)
+H03: 18.65% -> 17.39%  (-1.26)
+H06: 16.64% -> 15.58%  (-1.06)
+H07: 18.54% -> 16.33%  (-2.20)
+H16: 23.57% -> 23.11%  (-0.46)
+H18: 15.95% -> 15.45%  (-0.50)
+H19: 18.35% -> 16.95%  (-1.40)
+H20: 19.17% -> 16.76%  (-2.41)
+H21: 19.81% -> 18.42%  (-1.40)
 ```
 
 ## 10. 复现命令
@@ -385,14 +463,14 @@ H15: 35.03% -> 30.77%  (-4.26)
 python code/main.py features --strategy direct
 python code/main.py train --strategy direct --model lightgbm_smape_probe --test-months 2025-03 --n-iter 0
 python code/main.py evaluate --strategy direct --model lightgbm_smape_probe --test-months 2025-03
-python code/main.py backtest --strategy direct --model lightgbm_smape_probe_midday_v3 --n-iter 0 --min-train-months 3
+python code/main.py backtest --strategy direct --model lightgbm_smape_probe --n-iter 0 --min-train-months 3
 ```
 
 当前正式模型也可用实验别名复现：
 
 ```bash
-python code/main.py train --strategy direct --model lightgbm_smape_probe_midday_v3 --test-months 2025-03 --n-iter 0
-python code/main.py evaluate --strategy direct --model lightgbm_smape_probe_midday_v3 --test-months 2025-03
+python code/main.py train --strategy direct --model lightgbm_smape_probe_v3 --test-months 2025-03 --n-iter 0
+python code/main.py evaluate --strategy direct --model lightgbm_smape_probe_v3 --test-months 2025-03
 ```
 
 ## 11. 后续优化方向

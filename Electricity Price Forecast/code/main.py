@@ -175,7 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_parser.add_argument("--end-month", default=None, help="最后测试月份 YYYY-MM")
 
     optimize_parser = subparsers.add_parser("optimize-probe", help="LightGBM sMAPE 探针参数搜索")
-    optimize_parser.add_argument("--model", default="lightgbm_smape_probe_midday_v3", choices=list_model_types(), help="LightGBM 探针模型")
+    optimize_parser.add_argument("--model", default="lightgbm_smape_probe_v3", choices=list_model_types(), help="LightGBM 探针模型")
     optimize_parser.add_argument("--hours", type=int, nargs="+", default=None, help="指定搜索小时")
     optimize_parser.add_argument("--test-months", nargs="+", default=None, help="测试月份 YYYY-MM")
     optimize_parser.add_argument("--max-candidates", type=int, default=80, help="每小时最大候选参数组数")

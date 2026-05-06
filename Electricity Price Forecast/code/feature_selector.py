@@ -86,38 +86,100 @@ FEATURE_CONFIG: Dict = {
             "normalize": False,
         },
         "lightgbm_smape_probe": {
-            "description": "LightGBM Direct sMAPE 正式探针模型（午间 v3）",
+            "description": "LightGBM Direct sMAPE 正式探针模型（v3）",
             "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window"],
             "hourly_overrides": {
-                hour: {
+                **{
+                    hour: {
+                        "feature_groups": [
+                            "direct_time_midday",
+                            "direct_price_lag",
+                            "direct_market_window",
+                            "direct_weather_window",
+                            "direct_midday_regime",
+                            "direct_midday_weather_agg",
+                        ]
+                    }
+                    for hour in range(8, 16)
+                },
+                **{
+                    hour: {
+                        "feature_groups": [
+                            "direct_time_midday",
+                            "direct_price_lag",
+                            "direct_market_window",
+                        ]
+                    }
+                    for hour in [1, 2, 3, 6, 7, 21]
+                },
+                **{
+                    hour: {
+                        "feature_groups": [
+                            "direct_time_midday",
+                            "direct_price_lag",
+                            "direct_market_window",
+                            "direct_weather_window",
+                        ]
+                    }
+                    for hour in [16, 18, 20]
+                },
+                19: {
                     "feature_groups": [
-                        "direct_time_midday",
+                        "direct_time",
                         "direct_price_lag",
                         "direct_market_window",
                         "direct_weather_window",
-                        "direct_midday_regime",
-                        "direct_midday_weather_agg",
                     ]
-                }
-                for hour in range(8, 16)
+                },
             },
             "normalize": False,
         },
-        "lightgbm_smape_probe_midday_v3": {
-            "description": "LightGBM Direct 午间低价强化探针模型 v3",
+        "lightgbm_smape_probe_v3": {
+            "description": "LightGBM Direct sMAPE 探针模型 v3",
             "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window"],
             "hourly_overrides": {
-                hour: {
+                **{
+                    hour: {
+                        "feature_groups": [
+                            "direct_time_midday",
+                            "direct_price_lag",
+                            "direct_market_window",
+                            "direct_weather_window",
+                            "direct_midday_regime",
+                            "direct_midday_weather_agg",
+                        ]
+                    }
+                    for hour in range(8, 16)
+                },
+                **{
+                    hour: {
+                        "feature_groups": [
+                            "direct_time_midday",
+                            "direct_price_lag",
+                            "direct_market_window",
+                        ]
+                    }
+                    for hour in [1, 2, 3, 6, 7, 21]
+                },
+                **{
+                    hour: {
+                        "feature_groups": [
+                            "direct_time_midday",
+                            "direct_price_lag",
+                            "direct_market_window",
+                            "direct_weather_window",
+                        ]
+                    }
+                    for hour in [16, 18, 20]
+                },
+                19: {
                     "feature_groups": [
-                        "direct_time_midday",
+                        "direct_time",
                         "direct_price_lag",
                         "direct_market_window",
                         "direct_weather_window",
-                        "direct_midday_regime",
-                        "direct_midday_weather_agg",
                     ]
-                }
-                for hour in range(8, 16)
+                },
             },
             "normalize": False,
         },

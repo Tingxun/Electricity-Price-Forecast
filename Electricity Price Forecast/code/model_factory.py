@@ -73,7 +73,7 @@ def _with_common_lgbm_params(hourly_params: Dict[int, Dict[str, Any]]) -> None:
 
 _with_common_lgbm_params(LIGHTGBM_SMAPE_PROBE_PARAMS)
 
-LIGHTGBM_SMAPE_PROBE_MIDDAY_V3_PARAMS: Dict[int, Dict[str, Any]] = {
+LIGHTGBM_SMAPE_PROBE_V3_PARAMS: Dict[int, Dict[str, Any]] = {
     hour: params.copy() for hour, params in LIGHTGBM_SMAPE_PROBE_PARAMS.items()
 }
 
@@ -82,13 +82,47 @@ def _ensemble_member(weight: float, feature_groups: List[str], params: Dict[str,
     return {"weight": weight, "feature_groups": feature_groups, "params": params}
 
 
+_BASE_GROUPS = ["direct_time", "direct_price_lag", "direct_market_window"]
+_BASE_WEATHER_GROUPS = [*_BASE_GROUPS, "direct_weather_window"]
 _DEFAULT_GROUPS = ["direct_time_midday", "direct_price_lag", "direct_market_window"]
 _WEATHER_GROUPS = [*_DEFAULT_GROUPS, "direct_weather_window"]
 _MIDDAY_GROUPS = [*_DEFAULT_GROUPS, "direct_midday_regime"]
 _MIDDAY_WEATHER_GROUPS = [*_MIDDAY_GROUPS, "direct_midday_weather_agg"]
 
-LIGHTGBM_SMAPE_PROBE_MIDDAY_V3_PARAMS.update(
+LIGHTGBM_SMAPE_PROBE_V3_PARAMS.update(
     {
+        1: {
+            "model_kind": "feature_ensemble",
+            "members": [
+                _ensemble_member(1.0, _DEFAULT_GROUPS, {"objective": "quantile", "alpha": 0.16, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
+            ],
+        },
+        2: {
+            "model_kind": "feature_ensemble",
+            "members": [
+                _ensemble_member(0.67, _DEFAULT_GROUPS, {"objective": "quantile", "alpha": 0.41, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
+                _ensemble_member(0.33, _BASE_GROUPS, {"objective": "quantile", "alpha": 0.51, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
+            ],
+        },
+        3: {
+            "model_kind": "feature_ensemble",
+            "members": [
+                _ensemble_member(1.0, _DEFAULT_GROUPS, {"objective": "quantile", "alpha": 0.48, "n_estimators": 500, "learning_rate": 0.02, "num_leaves": 31, "max_depth": 5, "min_child_samples": 10, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
+            ],
+        },
+        6: {
+            "model_kind": "feature_ensemble",
+            "members": [
+                _ensemble_member(1.0, _DEFAULT_GROUPS, {"objective": "regression", "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
+            ],
+        },
+        7: {
+            "model_kind": "feature_ensemble",
+            "members": [
+                _ensemble_member(0.4558, _DEFAULT_GROUPS, {"objective": "quantile", "alpha": 0.09, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
+                _ensemble_member(0.5442, _BASE_GROUPS, {"objective": "quantile", "alpha": 0.05, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
+            ],
+        },
         8: {
             "model_kind": "feature_ensemble",
             "members": [
@@ -150,21 +184,54 @@ LIGHTGBM_SMAPE_PROBE_MIDDAY_V3_PARAMS.update(
                 _ensemble_member(0.70, _MIDDAY_GROUPS, {"objective": "quantile", "alpha": 0.25, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 5, "min_child_samples": 10, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
             ],
         },
+        16: {
+            "model_kind": "feature_ensemble",
+            "members": [
+                _ensemble_member(0.1667, _DEFAULT_GROUPS, {"objective": "quantile", "alpha": 0.36, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 5, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
+                _ensemble_member(0.6667, _BASE_GROUPS, {"objective": "quantile", "alpha": 0.24, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 5, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
+                _ensemble_member(0.1667, _WEATHER_GROUPS, {"objective": "quantile", "alpha": 0.2, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 5, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
+            ],
+        },
+        18: {
+            "model_kind": "feature_ensemble",
+            "members": [
+                _ensemble_member(1.0, _WEATHER_GROUPS, {"objective": "quantile", "alpha": 0.29, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
+            ],
+        },
+        19: {
+            "model_kind": "feature_ensemble",
+            "members": [
+                _ensemble_member(1.0, _BASE_WEATHER_GROUPS, {"objective": "quantile", "alpha": 0.15, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
+            ],
+        },
+        20: {
+            "model_kind": "feature_ensemble",
+            "members": [
+                _ensemble_member(0.6024, _DEFAULT_GROUPS, {"objective": "quantile", "alpha": 0.58, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
+                _ensemble_member(0.3976, _BASE_WEATHER_GROUPS, {"objective": "regression", "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
+            ],
+        },
+        21: {
+            "model_kind": "feature_ensemble",
+            "members": [
+                _ensemble_member(1.0, _DEFAULT_GROUPS, {"objective": "quantile", "alpha": 0.05, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
+            ],
+        },
     }
 )
 
 # Promote the validated midday v3 probe as the official sMAPE probe. The
-# lightgbm_smape_probe_midday_v3 name remains available for reproducing the
+# lightgbm_smape_probe_v3 name remains available for reproducing the
 # experiment while lightgbm_smape_probe is the production alias.
 LIGHTGBM_SMAPE_PROBE_PARAMS = {
-    hour: params.copy() for hour, params in LIGHTGBM_SMAPE_PROBE_MIDDAY_V3_PARAMS.items()
+    hour: params.copy() for hour, params in LIGHTGBM_SMAPE_PROBE_V3_PARAMS.items()
 }
 
 
 DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
     "lightgbm": LIGHTGBM_DEFAULT_PARAMS,
     "lightgbm_smape_probe": LIGHTGBM_DEFAULT_PARAMS,
-    "lightgbm_smape_probe_midday_v3": LIGHTGBM_DEFAULT_PARAMS,
+    "lightgbm_smape_probe_v3": LIGHTGBM_DEFAULT_PARAMS,
     "xgboost": {
         "n_estimators": 200,
         "learning_rate": 0.05,
@@ -205,7 +272,7 @@ PARAM_SPACES: Dict[str, Dict[str, List[Any]]] = {
         "random_state": [42],
     },
     "lightgbm_smape_probe": {},
-    "lightgbm_smape_probe_midday_v3": {},
+    "lightgbm_smape_probe_v3": {},
     "xgboost": {
         "n_estimators": [100, 200, 300, 500],
         "learning_rate": [0.01, 0.03, 0.05, 0.08, 0.1],
@@ -244,8 +311,8 @@ def get_default_params(model_type: str, hour: int | None = None) -> Dict[str, An
     _validate_model_type(model_type)
     if model_type == "lightgbm_smape_probe" and hour in LIGHTGBM_SMAPE_PROBE_PARAMS:
         return LIGHTGBM_SMAPE_PROBE_PARAMS[hour].copy()
-    if model_type == "lightgbm_smape_probe_midday_v3" and hour in LIGHTGBM_SMAPE_PROBE_MIDDAY_V3_PARAMS:
-        return LIGHTGBM_SMAPE_PROBE_MIDDAY_V3_PARAMS[hour].copy()
+    if model_type == "lightgbm_smape_probe_v3" and hour in LIGHTGBM_SMAPE_PROBE_V3_PARAMS:
+        return LIGHTGBM_SMAPE_PROBE_V3_PARAMS[hour].copy()
     return DEFAULT_PARAMS[model_type].copy()
 
 
@@ -258,7 +325,7 @@ def create_model(model_type: str, params: Dict[str, Any]):
     _validate_model_type(model_type)
     params = params.copy()
 
-    if model_type in {"lightgbm", "lightgbm_smape_probe", "lightgbm_smape_probe_midday_v3"}:
+    if model_type in {"lightgbm", "lightgbm_smape_probe", "lightgbm_smape_probe_v3"}:
         from lightgbm import LGBMRegressor
 
         if params.get("model_kind") == "feature_ensemble":
