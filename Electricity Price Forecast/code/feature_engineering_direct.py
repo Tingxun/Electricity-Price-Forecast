@@ -159,6 +159,11 @@ class DirectFeatureEngineer:
         features['是否周末'] = 1 if target_date.dayofweek >= 5 else 0
         features['季度'] = (target_date.month - 1) // 3 + 1
         features['目标小时'] = target_hour
+        for weekday in range(1, 8):
+            features[f'星期_{weekday}'] = 1 if target_date.dayofweek + 1 == weekday else 0
+        features['是否周三'] = 1 if target_date.dayofweek == 2 else 0
+        features['是否周六'] = 1 if target_date.dayofweek == 5 else 0
+        features['是否周日'] = 1 if target_date.dayofweek == 6 else 0
         
         # 2. 历史实时价格特征（仅使用T-2及之前，避免数据泄露）
         self._add_price_history_features(
@@ -168,6 +173,8 @@ class DirectFeatureEngineer:
             date_index=date_index,
             target_hour=target_hour
         )
+        self._add_same_weekday_price_features(features, daily_data, all_dates, date_index, target_hour)
+        self._add_midday_low_price_features(features, daily_data, all_dates, date_index, target_hour)
         
         # 3. 其他特征的滑动窗口（可用市场边界 + 气象）
         # 对于T+1日target_hour时刻，使用1h滞后和1h未来
@@ -187,6 +194,8 @@ class DirectFeatureEngineer:
         self._add_hour_features(features, target_date_data, future_hour, '未来1h')
         self._add_market_change_features(features)
         self._add_market_daily_shape_features(features, target_date_data, target_hour)
+        self._add_midday_market_shape_features(features, target_date_data, target_hour)
+        self._add_midday_weather_agg_features(features, target_date_data, target_hour)
         
         # 4. 目标值（T+1日target_hour时刻的实时价格）
         target_hour_data = target_date_data[target_date_data['小时'] == target_hour]
@@ -280,6 +289,73 @@ class DirectFeatureEngineer:
         if pd.isna(price):
             return None
         return float(price)
+
+    def _add_same_weekday_price_features(self, features: Dict,
+                                         daily_data: Dict[pd.Timestamp, pd.DataFrame],
+                                         all_dates: np.ndarray, date_index: int,
+                                         target_hour: int) -> None:
+        """添加同星期历史价格形态，窗口均来自T-7/T-14/T-21。"""
+        values = {}
+        for lag in [7, 14, 21]:
+            if date_index - lag < 0:
+                continue
+            lag_data = daily_data.get(all_dates[date_index - lag])
+            if lag_data is None:
+                continue
+            price = self._get_hour_price(lag_data, target_hour)
+            if price is None:
+                continue
+            values[lag] = price
+            features[f'同星期历史_滞后{lag}天_H{target_hour:02d}_价格'] = price
+
+        if values:
+            arr = np.asarray(list(values.values()), dtype=float)
+            prefix = f'同星期历史_H{target_hour:02d}_近3周'
+            features[f'{prefix}_均值'] = float(arr.mean())
+            features[f'{prefix}_最小值'] = float(arr.min())
+            features[f'{prefix}_最大值'] = float(arr.max())
+            features[f'{prefix}_低价次数'] = int(np.sum(arr <= 80))
+        if 7 in values and 14 in values:
+            features[f'同星期历史_H{target_hour:02d}_T7减T14'] = values[7] - values[14]
+
+    def _add_midday_low_price_features(self, features: Dict,
+                                       daily_data: Dict[pd.Timestamp, pd.DataFrame],
+                                       all_dates: np.ndarray, date_index: int,
+                                       target_hour: int) -> None:
+        """添加T-2日午间低价形态，帮助H08-H15识别低价/近零价风险。"""
+        if target_hour < 8 or target_hour > 15:
+            return
+        t_minus_2_data = daily_data.get(all_dates[date_index - 2])
+        if t_minus_2_data is None:
+            return
+
+        hour_prices = []
+        for hour in range(8, 16):
+            price = self._get_hour_price(t_minus_2_data, hour)
+            if price is not None:
+                hour_prices.append((hour, price))
+        if len(hour_prices) != 8:
+            return
+
+        hours = np.asarray([item[0] for item in hour_prices], dtype=int)
+        prices = np.asarray([item[1] for item in hour_prices], dtype=float)
+        current_price = prices[np.where(hours == target_hour)[0][0]]
+        midday_mean = float(prices.mean())
+        midday_min = float(prices.min())
+        midday_max = float(prices.max())
+        valley_hour = int(hours[int(np.argmin(prices))])
+
+        features['午间低价_T2_H08H15均值'] = midday_mean
+        features['午间低价_T2_H08H15最小值'] = midday_min
+        features['午间低价_T2_H08H15最大值'] = midday_max
+        features['午间低价_T2_H08H15低价小时数'] = int(np.sum(prices <= 80))
+        features['午间低价_T2_H08H15近零小时数'] = int(np.sum(prices <= 20))
+        features['午间低价_T2_谷底小时'] = valley_hour
+        features['午间低价_T2_目标小时距谷底'] = int(target_hour - valley_hour)
+        features[f'午间低价_H{target_hour:02d}_T2相对午间均值'] = float(current_price - midday_mean)
+        features[f'午间低价_H{target_hour:02d}_T2日内位置'] = (
+            float((current_price - midday_min) / (midday_max - midday_min)) if midday_max != midday_min else 0.0
+        )
     
     def _add_hour_features(self, features: Dict, date_data: pd.DataFrame, 
                           hour: int, prefix: str):
@@ -407,6 +483,92 @@ class DirectFeatureEngineer:
                 features[f'市场日形态_H{target_hour:02d}_{name}_日内位置'] = (
                     float((current - arr.min()) / denominator) if denominator != 0 else 0.0
                 )
+
+    def _add_midday_market_shape_features(self, features: Dict, date_data: pd.DataFrame, target_hour: int) -> None:
+        """添加目标日H08-H15市场形态，聚焦午间低价风险。"""
+        if target_hour < 8 or target_hour > 15:
+            return
+
+        hourly_values = []
+        for hour in range(8, 16):
+            hour_data = date_data[date_data['小时'] == hour]
+            if len(hour_data) != 1:
+                return
+            hourly_values.append((hour, self._compute_market_values(hour_data.iloc[0])))
+
+        for name in ['系统负荷', '光伏出力', '新能源出力', '净负荷', '剩余负荷', '市场化缺口', '供需覆盖率']:
+            values = []
+            current = None
+            for hour, item in hourly_values:
+                if name not in item or pd.isna(item[name]):
+                    continue
+                value = float(item[name])
+                values.append(value)
+                if hour == target_hour:
+                    current = value
+            if len(values) != 8 or current is None:
+                continue
+
+            arr = np.asarray(values, dtype=float)
+            prefix = f'午间市场形态_{name}'
+            features[f'{prefix}_均值'] = float(arr.mean())
+            features[f'{prefix}_标准差'] = float(arr.std())
+            features[f'{prefix}_最小值'] = float(arr.min())
+            features[f'{prefix}_最大值'] = float(arr.max())
+            features[f'{prefix}_H08到H15爬坡'] = float(arr[-1] - arr[0])
+            denominator = arr.max() - arr.min()
+            features[f'午间市场形态_H{target_hour:02d}_{name}_相对午间均值'] = float(current - arr.mean())
+            features[f'午间市场形态_H{target_hour:02d}_{name}_午间位置'] = (
+                float((current - arr.min()) / denominator) if denominator != 0 else 0.0
+            )
+
+    def _add_midday_weather_agg_features(self, features: Dict, date_data: pd.DataFrame, target_hour: int) -> None:
+        """添加聚合气象特征，减少直接使用数百个气象源的过拟合风险。"""
+        weather_keywords = ['温度', '总云量', '辐照度']
+        weather_cols = [
+            col for col in date_data.columns
+            if any(keyword in col for keyword in weather_keywords)
+        ]
+        if not weather_cols:
+            return
+
+        for prefix, hour in [
+            ('当前', target_hour),
+            ('滞后1h', target_hour - 1 if target_hour > 0 else 23),
+            ('未来1h', target_hour + 1 if target_hour < 23 else 0),
+        ]:
+            hour_data = date_data[date_data['小时'] == hour]
+            if len(hour_data) != 1:
+                continue
+            row = hour_data.iloc[0]
+            self._add_weather_aggregates(features, row, prefix, weather_cols)
+
+        if 8 <= target_hour <= 15:
+            midday_data = date_data[date_data['小时'].between(8, 15)]
+            if len(midday_data) == 8:
+                for keyword in weather_keywords:
+                    cols = [col for col in weather_cols if keyword in col]
+                    values = midday_data[cols].to_numpy(dtype=float).reshape(-1) if cols else np.asarray([])
+                    values = values[~np.isnan(values)]
+                    if values.size == 0:
+                        continue
+                    features[f'午间气象聚合_{keyword}_均值'] = float(values.mean())
+                    features[f'午间气象聚合_{keyword}_最大值'] = float(values.max())
+                    features[f'午间气象聚合_{keyword}_标准差'] = float(values.std())
+
+    def _add_weather_aggregates(self, features: Dict, row: pd.Series, prefix: str, weather_cols: List[str]) -> None:
+        for keyword in ['温度', '总云量', '辐照度']:
+            values = []
+            for col in weather_cols:
+                if keyword in col and col in row.index and pd.notna(row[col]):
+                    values.append(float(row[col]))
+            if not values:
+                continue
+            arr = np.asarray(values, dtype=float)
+            features[f'{prefix}_气象聚合_{keyword}_均值'] = float(arr.mean())
+            features[f'{prefix}_气象聚合_{keyword}_最大值'] = float(arr.max())
+            features[f'{prefix}_气象聚合_{keyword}_最小值'] = float(arr.min())
+            features[f'{prefix}_气象聚合_{keyword}_标准差'] = float(arr.std())
 
     @staticmethod
     def _sum_available(*values: Optional[float]) -> Optional[float]:

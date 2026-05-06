@@ -18,10 +18,28 @@ FEATURE_CONFIG: Dict = {
         "direct_time": {
             "features": ["月份", "星期", "是否周末", "季度"],
         },
+        "direct_time_midday": {
+            "features": [
+                "月份",
+                "星期",
+                "是否周末",
+                "季度",
+                "星期_1",
+                "星期_2",
+                "星期_3",
+                "星期_4",
+                "星期_5",
+                "星期_6",
+                "星期_7",
+                "是否周三",
+                "是否周六",
+                "是否周日",
+            ],
+        },
         "direct_price_lag": {
             "patterns": [
                 r"^滞后\d+天_H\d{2}_价格$",
-                r"^滞后2天_H\d{2}_(前1h|后1h)_价格$",
+                r"^滞后2天_H\d{2}_(前\d+h|后\d+h)_价格$",
                 r"^历史价格_",
             ],
         },
@@ -35,6 +53,19 @@ FEATURE_CONFIG: Dict = {
         "direct_weather_window": {
             "patterns": [
                 r"^(当前|滞后1h|未来1h)_气象_",
+            ],
+        },
+        "direct_midday_regime": {
+            "patterns": [
+                r"^同星期历史_",
+                r"^午间低价_",
+                r"^午间市场形态_",
+            ],
+        },
+        "direct_midday_weather_agg": {
+            "patterns": [
+                r"^(当前|滞后1h|未来1h)_气象聚合_",
+                r"^午间气象聚合_",
             ],
         },
     },
@@ -55,24 +86,38 @@ FEATURE_CONFIG: Dict = {
             "normalize": False,
         },
         "lightgbm_smape_probe": {
-            "description": "LightGBM Direct sMAPE探针参数组（正式版）",
+            "description": "LightGBM Direct sMAPE 正式探针模型（午间 v3）",
             "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window"],
             "hourly_overrides": {
-                8: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
-                9: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
-                10: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
-                13: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
+                hour: {
+                    "feature_groups": [
+                        "direct_time_midday",
+                        "direct_price_lag",
+                        "direct_market_window",
+                        "direct_weather_window",
+                        "direct_midday_regime",
+                        "direct_midday_weather_agg",
+                    ]
+                }
+                for hour in range(8, 16)
             },
             "normalize": False,
         },
-        "lightgbm_smape_probe_v2": {
-            "description": "LightGBM Direct sMAPE探针参数组v2",
+        "lightgbm_smape_probe_midday_v3": {
+            "description": "LightGBM Direct 午间低价强化探针模型 v3",
             "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window"],
             "hourly_overrides": {
-                8: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
-                9: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
-                10: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
-                13: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
+                hour: {
+                    "feature_groups": [
+                        "direct_time_midday",
+                        "direct_price_lag",
+                        "direct_market_window",
+                        "direct_weather_window",
+                        "direct_midday_regime",
+                        "direct_midday_weather_agg",
+                    ]
+                }
+                for hour in range(8, 16)
             },
             "normalize": False,
         },
@@ -168,7 +213,7 @@ class FeatureSelector:
             selected = set(self._existing(model_config["custom_features"], available_features))
 
         selected -= excluded
-        selected = {f for f in selected if not f.startswith("Price_H")}
+        selected = {feature for feature in selected if not feature.startswith("Price_H")}
 
         result = sorted(selected)
         if not result:
