@@ -28,7 +28,7 @@ from data_split import split_by_months
 from feature_engineering_direct import DirectFeatureEngineer
 from feature_selector import FeatureSelector
 from model_factory import create_model, get_default_params, list_model_types
-from utils.metrics import calculate_mae, calculate_rmse, calculate_smape
+from utils.metrics import calculate_accuracy_rate, calculate_mae, calculate_rmse, calculate_smape
 
 
 logger = logging.getLogger(__name__)
@@ -133,17 +133,17 @@ class LightGBMProbeOptimizer:
 
     def _optimize_hour(self, hour: int) -> List[Dict[str, Any]]:
         data_by_variant = {
-            "default": self._prepare_data(hour, DEFAULT_FEATURE_GROUPS),
+            "default": self._prepare_data_by_month(hour, DEFAULT_FEATURE_GROUPS),
         }
         if hour in WEAK_HOURS or hour in NON_MIDDAY_EXPERIMENT_HOURS:
-            data_by_variant["weather"] = self._prepare_data(hour, WEATHER_FEATURE_GROUPS)
+            data_by_variant["weather"] = self._prepare_data_by_month(hour, WEATHER_FEATURE_GROUPS)
         if hour in NON_MIDDAY_EXPERIMENT_HOURS:
-            data_by_variant["calendar"] = self._prepare_data(hour, CALENDAR_FEATURE_GROUPS)
-            data_by_variant["calendar_weather"] = self._prepare_data(hour, CALENDAR_WEATHER_FEATURE_GROUPS)
+            data_by_variant["calendar"] = self._prepare_data_by_month(hour, CALENDAR_FEATURE_GROUPS)
+            data_by_variant["calendar_weather"] = self._prepare_data_by_month(hour, CALENDAR_WEATHER_FEATURE_GROUPS)
         if hour in MIDDAY_HOURS:
-            data_by_variant["midday_regime"] = self._prepare_data(hour, MIDDAY_FEATURE_GROUPS)
-            data_by_variant["midday_regime_weather"] = self._prepare_data(hour, MIDDAY_WEATHER_AGG_FEATURE_GROUPS)
-            data_by_variant["midday_regime_weighted"] = self._prepare_data(hour, MIDDAY_FEATURE_GROUPS)
+            data_by_variant["midday_regime"] = self._prepare_data_by_month(hour, MIDDAY_FEATURE_GROUPS)
+            data_by_variant["midday_regime_weather"] = self._prepare_data_by_month(hour, MIDDAY_WEATHER_AGG_FEATURE_GROUPS)
+            data_by_variant["midday_regime_weighted"] = self._prepare_data_by_month(hour, MIDDAY_FEATURE_GROUPS)
 
         base_params = get_default_params(self.model_type, hour=hour)
         if hour in MIDDAY_HOURS:
@@ -155,7 +155,7 @@ class LightGBMProbeOptimizer:
             candidates = self._build_candidates(base_params, hour in WEAK_HOURS)
         rows = []
 
-        for feature_variant, data in data_by_variant.items():
+        for feature_variant, data_by_month in data_by_variant.items():
             for idx, params in enumerate(candidates, start=1):
                 params = params.copy()
                 if feature_variant == "midday_regime_weighted" and "sample_weight_mode" not in params and params.get("model_kind") != "two_stage_low_price":
@@ -166,22 +166,28 @@ class LightGBMProbeOptimizer:
                     "status": "success",
                     "candidate_id": idx,
                     "feature_variant": feature_variant,
-                    "feature_count": len(data["feature_cols"]),
-                    "test_period": data["split_info"]["test_period"],
-                    "n_train": data["split_info"]["n_train"],
-                    "n_test": data["split_info"]["n_test"],
+                    "feature_count": len(next(iter(data_by_month.values()))["feature_cols"]),
+                    "test_period": ",".join(data_by_month.keys()),
+                    "n_train": int(np.mean([data["split_info"]["n_train"] for data in data_by_month.values()])),
+                    "n_test": int(np.sum([data["split_info"]["n_test"] for data in data_by_month.values()])),
                     "params": json.dumps(params, ensure_ascii=False, sort_keys=True),
                     "is_default_params": idx == 1,
                 }
                 try:
-                    model = create_model(self.model_type, params)
-                    model.fit(data["X_train"], data["y_train"])
-                    pred = model.predict(data["X_test"])
+                    monthly_metrics = self._evaluate_candidate_by_month(params, data_by_month)
+                    smapes = [item["smape"] for item in monthly_metrics.values()]
+                    acc_rates = [item["acc_rate"] for item in monthly_metrics.values()]
                     row.update(
                         {
-                            "mae": calculate_mae(data["y_test"], pred),
-                            "rmse": calculate_rmse(data["y_test"], pred),
-                            "smape": calculate_smape(data["y_test"], pred),
+                            "mae": float(np.mean([item["mae"] for item in monthly_metrics.values()])),
+                            "rmse": float(np.mean([item["rmse"] for item in monthly_metrics.values()])),
+                            "smape": float(np.mean(smapes)),
+                            "max_month_smape": float(np.max(smapes)),
+                            "min_month_smape": float(np.min(smapes)),
+                            "smape_std": float(np.std(smapes)),
+                            "acc_rate": float(np.mean(acc_rates)),
+                            "generalization_score": self._generalization_score(smapes, acc_rates),
+                            "monthly_metrics": json.dumps(monthly_metrics, ensure_ascii=False, sort_keys=True),
                             "training_time": time.time() - start,
                         }
                     )
@@ -191,7 +197,77 @@ class LightGBMProbeOptimizer:
 
         return rows
 
+    def _prepare_data_by_month(self, hour: int, feature_groups: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+        features_df, target_col = self.engineer.load_features(hour)
+        feature_groups = self._feature_groups_for_model(feature_groups)
+        dates = pd.to_datetime(features_df["预测日期"])
+        available_months = sorted(str(month) for month in dates.dt.to_period("M").unique())
+        if self.test_months:
+            requested_months = [str(month) for month in self.test_months]
+        else:
+            requested_months = [available_months[-1]]
+
+        return {month: self._prepare_data_from_frame(features_df, target_col, hour, feature_groups, month) for month in requested_months}
+
+    def _feature_groups_for_model(self, feature_groups: Sequence[str]) -> List[str]:
+        if not self.model_type.endswith("_v4"):
+            return list(feature_groups)
+        replacements = {
+            "direct_time": "direct_time_v4",
+            "direct_time_midday": "direct_time_midday_v4",
+            "direct_price_lag": "direct_price_lag_v4",
+            "direct_midday_regime": "direct_midday_regime_v4",
+        }
+        return [replacements.get(group, group) for group in feature_groups]
+
+    def _prepare_data_from_frame(
+        self,
+        features_df: pd.DataFrame,
+        target_col: str,
+        hour: int,
+        feature_groups: Sequence[str],
+        test_month: str,
+    ) -> Dict[str, Any]:
+        candidate_features = [col for col in features_df.columns if col not in [target_col, "预测日期"]]
+        numeric_features = features_df[candidate_features].select_dtypes(include=[np.number]).columns.tolist()
+        feature_cols = self.feature_selector.select_features_from_groups(list(feature_groups), numeric_features)
+        split = split_by_months(features_df, "预测日期", [test_month])
+
+        return {
+            "X_train": features_df.loc[split.train_mask, feature_cols].reset_index(drop=True),
+            "y_train": features_df.loc[split.train_mask, target_col].to_numpy(),
+            "X_test": features_df.loc[split.test_mask, feature_cols].reset_index(drop=True),
+            "y_test": features_df.loc[split.test_mask, target_col].to_numpy(),
+            "feature_cols": feature_cols,
+            "split_info": split.to_dict(),
+        }
+
+    def _evaluate_candidate_by_month(self, params: Dict[str, Any], data_by_month: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
+        monthly_metrics: Dict[str, Dict[str, float]] = {}
+        for month, data in data_by_month.items():
+            model = create_model(self.model_type, params)
+            model.fit(data["X_train"], data["y_train"])
+            pred = model.predict(data["X_test"])
+            monthly_metrics[month] = {
+                "mae": calculate_mae(data["y_test"], pred),
+                "rmse": calculate_rmse(data["y_test"], pred),
+                "smape": calculate_smape(data["y_test"], pred),
+                "acc_rate": calculate_accuracy_rate(data["y_test"], pred, threshold=20.0),
+                "n_train": float(data["split_info"]["n_train"]),
+                "n_test": float(data["split_info"]["n_test"]),
+            }
+        return monthly_metrics
+
+    @staticmethod
+    def _generalization_score(smapes: Sequence[float], acc_rates: Sequence[float]) -> float:
+        smapes_arr = np.asarray(smapes, dtype=float)
+        acc_arr = np.asarray(acc_rates, dtype=float)
+        instability_penalty = max(0.0, float(np.max(smapes_arr) - np.mean(smapes_arr))) * 0.25
+        acc_bonus = float(np.mean(acc_arr)) * 0.02
+        return float(np.mean(smapes_arr) + instability_penalty - acc_bonus)
+
     def _prepare_data(self, hour: int, feature_groups: Sequence[str]) -> Dict[str, Any]:
+        feature_groups = self._feature_groups_for_model(feature_groups)
         features_df, target_col = self.engineer.load_features(hour)
         candidate_features = [col for col in features_df.columns if col not in [target_col, "预测日期"]]
         numeric_features = features_df[candidate_features].select_dtypes(include=[np.number]).columns.tolist()
@@ -396,7 +472,8 @@ class LightGBMProbeOptimizer:
         csv_path = log_dir / f"probe_optimization_{safe_period}{hour_suffix}.csv"
         results_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
 
-        best_df = success_df.sort_values(["hour", "smape"]).groupby("hour", as_index=False).head(1)
+        score_col = "generalization_score" if "generalization_score" in success_df.columns else "smape"
+        best_df = success_df.sort_values(["hour", score_col, "smape"]).groupby("hour", as_index=False).head(1)
         default_df = success_df[success_df["is_default_params"] & (success_df["feature_variant"] == "default")]
 
         summary = self._build_summary(best_df, default_df, requested_hours, test_period)
@@ -421,6 +498,8 @@ class LightGBMProbeOptimizer:
         best_smape = float(best_df["smape"].mean())
         baseline_under20 = int((default_df["smape"] < 20).sum())
         best_under20 = int((best_df["smape"] < 20).sum())
+        baseline_acc_rate = float(default_df["acc_rate"].mean()) if "acc_rate" in default_df.columns else None
+        best_acc_rate = float(best_df["acc_rate"].mean()) if "acc_rate" in best_df.columns else None
 
         requested_set = set(requested_hours)
         midday_hours = sorted(requested_set & set(range(8, 17)))
@@ -431,24 +510,28 @@ class LightGBMProbeOptimizer:
             baseline_midday = None
             best_midday = None
 
+        no_month_regression = self._no_month_regression(best_df, default_df, tolerance=2.0)
         acceptance_reasons = []
-        if best_smape < 27.0:
-            acceptance_reasons.append("overall_smape_below_27")
-        if best_under20 >= baseline_under20 + 2:
-            acceptance_reasons.append("under20_hours_plus_2")
+        if best_smape < baseline_smape and no_month_regression:
+            acceptance_reasons.append("multi_month_smape_improved_without_month_regression_gt_2")
+        if best_acc_rate is not None and baseline_acc_rate is not None and best_acc_rate > baseline_acc_rate and no_month_regression:
+            acceptance_reasons.append("multi_month_acc_rate_improved_without_month_regression_gt_2")
         if (
             baseline_midday is not None
             and best_midday is not None
             and baseline_midday - best_midday >= 3.0
-            and best_smape <= baseline_smape
+            and no_month_regression
         ):
-            acceptance_reasons.append("midday_smape_down_3_without_overall_regression")
+            acceptance_reasons.append("midday_smape_down_3_without_month_regression_gt_2")
 
         best_params = {}
         for row in best_df.sort_values("hour").itertuples(index=False):
             best_params[f"H{int(row.hour):02d}"] = {
                 "smape": float(row.smape),
+                "generalization_score": float(getattr(row, "generalization_score", row.smape)),
+                "acc_rate": float(getattr(row, "acc_rate", np.nan)),
                 "feature_variant": row.feature_variant,
+                "monthly_metrics": json.loads(row.monthly_metrics) if hasattr(row, "monthly_metrics") else {},
                 "params": json.loads(row.params),
             }
 
@@ -458,14 +541,32 @@ class LightGBMProbeOptimizer:
             "hours": requested_hours,
             "baseline_smape": baseline_smape,
             "best_smape": best_smape,
+            "baseline_acc_rate": baseline_acc_rate,
+            "best_acc_rate": best_acc_rate,
             "baseline_under20_hours": baseline_under20,
             "best_under20_hours": best_under20,
             "baseline_midday_smape": baseline_midday,
             "best_midday_smape": best_midday,
+            "no_month_regression_gt_2": no_month_regression,
             "accepted": bool(acceptance_reasons),
             "acceptance_reasons": acceptance_reasons,
             "best_params_by_hour": best_params,
         }
+
+    @staticmethod
+    def _no_month_regression(best_df: pd.DataFrame, default_df: pd.DataFrame, tolerance: float) -> bool:
+        default_by_hour = {int(row.hour): json.loads(row.monthly_metrics) for row in default_df.itertuples(index=False)}
+        for row in best_df.itertuples(index=False):
+            hour = int(row.hour)
+            baseline_metrics = default_by_hour.get(hour, {})
+            best_metrics = json.loads(row.monthly_metrics)
+            for month, metrics in best_metrics.items():
+                baseline_smape = baseline_metrics.get(month, {}).get("smape")
+                if baseline_smape is None:
+                    continue
+                if float(metrics["smape"]) > float(baseline_smape) + tolerance:
+                    return False
+        return True
 
 
 def setup_logging() -> None:
@@ -506,8 +607,10 @@ def main() -> None:
         broad_alpha_step=args.broad_alpha_step,
     ).optimize(args.hours)
     ok = results[results["status"] == "success"]
-    best = ok.sort_values(["hour", "smape"]).groupby("hour", as_index=False).head(1)
-    print(best[["hour", "feature_variant", "smape", "mae", "rmse"]].to_string(index=False))
+    score_col = "generalization_score" if "generalization_score" in ok.columns else "smape"
+    best = ok.sort_values(["hour", score_col, "smape"]).groupby("hour", as_index=False).head(1)
+    display_cols = [col for col in ["hour", "feature_variant", "smape", "max_month_smape", "acc_rate", "generalization_score", "mae", "rmse"] if col in best.columns]
+    print(best[display_cols].to_string(index=False))
     print(f"\nBest-combined average sMAPE={best['smape'].mean():.2f}%")
 
 

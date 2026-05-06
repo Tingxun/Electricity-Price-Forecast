@@ -24,10 +24,14 @@ from data_split import list_rolling_months, split_by_months
 from feature_engineering_direct import DirectFeatureEngineer
 from feature_selector import FeatureSelector
 from model_factory import create_model, get_default_params, get_param_space, list_model_types
-from utils.metrics import calculate_mae, calculate_rmse, calculate_smape
+from utils.metrics import calculate_accuracy_rate, calculate_mae, calculate_rmse, calculate_sape, calculate_smape
 
 
 logger = logging.getLogger(__name__)
+
+FORWARD_DEFAULT_START_MONTH = "2025-03"
+FORWARD_DEFAULT_END_MONTH = "2025-06"
+ROLLING_MODE = "expanding_forward"
 
 
 class DirectMonthlyBacktester:
@@ -40,8 +44,8 @@ class DirectMonthlyBacktester:
         n_iter: int,
         cv_folds: int,
         min_train_months: int,
-        start_month: Optional[str] = None,
-        end_month: Optional[str] = None,
+        start_month: Optional[str] = FORWARD_DEFAULT_START_MONTH,
+        end_month: Optional[str] = FORWARD_DEFAULT_END_MONTH,
     ):
         self.config = config
         self.model_type = model_type
@@ -52,6 +56,8 @@ class DirectMonthlyBacktester:
         self.end_month = end_month
         self.feature_selector = FeatureSelector()
         self.engineer = DirectFeatureEngineer()
+        self.rolling_mode = ROLLING_MODE
+        self.prediction_rows: List[Dict[str, Any]] = []
 
     def run(self, hours: Optional[List[int]] = None) -> pd.DataFrame:
         if hours is None:
@@ -87,11 +93,30 @@ class DirectMonthlyBacktester:
         data = self._prepare_data(hour, test_month)
         best_params, cv_smape = self._search_best_params(data["X_train"], data["y_train"], hour, 42 + hour)
 
+        calibration = self._fit_pretest_calibration(best_params, data) if self.model_type.endswith("_v4") else self._default_calibration()
         model = create_model(self.model_type, best_params)
         model.fit(data["X_train"], data["y_train"])
-        y_pred = model.predict(data["X_test"])
+        y_pred = self._apply_calibration(model.predict(data["X_test"]), calibration)
+        sape = calculate_sape(data["y_test"], y_pred)
+
+        for date, actual, pred, sape_value in zip(data["test_dates"], data["y_test"], y_pred, sape):
+            self.prediction_rows.append(
+                {
+                    "rolling_mode": self.rolling_mode,
+                    "test_month": test_month,
+                    "hour": hour,
+                    "预测日期": pd.Timestamp(date).strftime("%Y-%m-%d"),
+                    "actual": float(actual),
+                    "pred": float(pred),
+                    "error": float(pred - actual),
+                    "abs_error": float(abs(pred - actual)),
+                    "sape": float(sape_value),
+                    "actual_price_bucket": self._price_bucket(actual),
+                }
+            )
 
         return {
+            "rolling_mode": self.rolling_mode,
             "test_month": test_month,
             "hour": hour,
             "status": "success",
@@ -105,8 +130,10 @@ class DirectMonthlyBacktester:
             "mae": calculate_mae(data["y_test"], y_pred),
             "rmse": calculate_rmse(data["y_test"], y_pred),
             "smape": calculate_smape(data["y_test"], y_pred),
+            "acc_rate": calculate_accuracy_rate(data["y_test"], y_pred, threshold=20.0),
             "training_time": time.time() - start,
             "best_params": json.dumps(best_params, ensure_ascii=False),
+            "calibration": json.dumps(calibration, ensure_ascii=False),
         }
 
     def _prepare_data(self, hour: int, test_month: str) -> Dict[str, Any]:
@@ -121,6 +148,8 @@ class DirectMonthlyBacktester:
         y_train = features_df.loc[split.train_mask, target_col].to_numpy()
         X_test = features_df.loc[split.test_mask, feature_cols].reset_index(drop=True)
         y_test = features_df.loc[split.test_mask, target_col].to_numpy()
+        train_dates = features_df.loc[split.train_mask, "预测日期"].reset_index(drop=True)
+        test_dates = features_df.loc[split.test_mask, "预测日期"].reset_index(drop=True)
 
         if feature_info.get("normalize", False):
             scaler = StandardScaler()
@@ -132,8 +161,91 @@ class DirectMonthlyBacktester:
             "y_train": y_train,
             "X_test": X_test,
             "y_test": y_test,
+            "train_dates": train_dates,
+            "test_dates": test_dates,
             "split_info": split.to_dict(),
         }
+
+    def _fit_pretest_calibration(self, params: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, float]:
+        """Fit a simple per-hour calibration on the last training month only."""
+        train_dates = pd.to_datetime(data["train_dates"])
+        train_months = train_dates.dt.to_period("M")
+        validation_month = train_months.max()
+        fit_mask = train_months < validation_month
+        val_mask = train_months == validation_month
+
+        if int(fit_mask.sum()) < 30 or int(val_mask.sum()) < 7:
+            return self._default_calibration()
+
+        try:
+            model = create_model(self.model_type, params)
+            model.fit(data["X_train"].loc[fit_mask].reset_index(drop=True), data["y_train"][fit_mask.to_numpy()])
+            val_pred = model.predict(data["X_train"].loc[val_mask].reset_index(drop=True))
+            calibration = self._search_calibration(data["y_train"][val_mask.to_numpy()], val_pred)
+            calibration["validation_month"] = str(validation_month)
+            return calibration
+        except Exception as exc:
+            logger.warning("校准失败，回退默认校准: %s", exc)
+            return self._default_calibration()
+
+    @staticmethod
+    def _default_calibration() -> Dict[str, float]:
+        return {"scale": 1.0, "bias": 0.0, "clip_min": None, "validation_smape": None, "validation_acc_rate": None}
+
+    @staticmethod
+    def _search_calibration(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+        y_true = np.asarray(y_true, dtype=float)
+        y_pred = np.asarray(y_pred, dtype=float)
+        best = {
+            "scale": 1.0,
+            "bias": 0.0,
+            "clip_min": None,
+            "validation_smape": calculate_smape(y_true, y_pred),
+            "validation_acc_rate": calculate_accuracy_rate(y_true, y_pred, threshold=20.0),
+        }
+        best_score = best["validation_smape"] - 0.02 * best["validation_acc_rate"]
+
+        for scale in np.round(np.arange(0.55, 1.31, 0.05), 2):
+            for bias in np.arange(-120.0, 81.0, 10.0):
+                for clip_min in [None, 0.0]:
+                    calibrated = y_pred * scale + bias
+                    if clip_min is not None:
+                        calibrated = np.maximum(calibrated, clip_min)
+                    smape = calculate_smape(y_true, calibrated)
+                    acc_rate = calculate_accuracy_rate(y_true, calibrated, threshold=20.0)
+                    score = smape - 0.02 * acc_rate
+                    if score < best_score:
+                        best_score = score
+                        best = {
+                            "scale": float(scale),
+                            "bias": float(bias),
+                            "clip_min": clip_min,
+                            "validation_smape": float(smape),
+                            "validation_acc_rate": float(acc_rate),
+                        }
+        return best
+
+    @staticmethod
+    def _apply_calibration(y_pred: np.ndarray, calibration: Dict[str, Any]) -> np.ndarray:
+        calibrated = np.asarray(y_pred, dtype=float) * float(calibration.get("scale", 1.0))
+        calibrated = calibrated + float(calibration.get("bias", 0.0))
+        clip_min = calibration.get("clip_min")
+        if clip_min is not None:
+            calibrated = np.maximum(calibrated, float(clip_min))
+        return calibrated
+
+    @staticmethod
+    def _price_bucket(value: float) -> str:
+        value = float(value)
+        if value <= 0:
+            return "zero"
+        if value <= 20:
+            return "near_zero"
+        if value <= 80:
+            return "low_20_80"
+        if value <= 200:
+            return "mid_80_200"
+        return "high_200_plus"
 
     def _search_best_params(
         self,
@@ -189,24 +301,71 @@ class DirectMonthlyBacktester:
         log_dir.mkdir(parents=True, exist_ok=True)
 
         results_df.to_csv(log_dir / "monthly_backtest.csv", index=False, encoding="utf-8-sig")
+        prediction_df = pd.DataFrame(self.prediction_rows)
+        if not prediction_df.empty:
+            prediction_df.to_csv(log_dir / "monthly_backtest_predictions.csv", index=False, encoding="utf-8-sig")
+
         success_df = results_df[results_df["status"] == "success"].copy()
         month_summary = (
             success_df.groupby("test_month", as_index=False)
-            .agg(mae=("mae", "mean"), rmse=("rmse", "mean"), smape=("smape", "mean"), under20=("smape", lambda s: int((s < 20).sum())))
+            .agg(
+                mae=("mae", "mean"),
+                rmse=("rmse", "mean"),
+                smape=("smape", "mean"),
+                hourly_acc_rate=("acc_rate", "mean"),
+                under20_hours=("smape", lambda s: int((s < 20).sum())),
+            )
         )
+        month_summary["rolling_mode"] = self.rolling_mode
+        month_summary["midday_smape"] = month_summary["test_month"].map(self._band_smape(success_df, range(8, 16)))
+        month_summary["non_midday_smape"] = month_summary["test_month"].map(
+            self._band_smape(success_df, [*range(0, 8), *range(16, 24)])
+        )
+        month_summary["worst_hours"] = month_summary["test_month"].map(self._worst_hours(success_df))
+        if not prediction_df.empty:
+            monthly_acc = prediction_df.groupby("test_month")["sape"].apply(lambda s: float((s < 20.0).mean() * 100.0))
+            month_summary["monthly_acc_rate"] = month_summary["test_month"].map(monthly_acc)
+        else:
+            month_summary["monthly_acc_rate"] = month_summary["hourly_acc_rate"]
+        month_summary["smape_below_30"] = month_summary["smape"] < 30.0
+        month_summary["monthly_acc_rate_ge_50"] = month_summary["monthly_acc_rate"] >= 50.0
         month_summary.to_csv(log_dir / "monthly_backtest_summary.csv", index=False, encoding="utf-8-sig")
 
         summary = {
             "model_type": self.model_type,
+            "rolling_mode": self.rolling_mode,
+            "start_month": self.start_month,
+            "end_month": self.end_month,
             "n_months": int(month_summary.shape[0]),
             "n_rows": int(success_df.shape[0]),
             "overall_mae": float(success_df["mae"].mean()) if not success_df.empty else None,
             "overall_rmse": float(success_df["rmse"].mean()) if not success_df.empty else None,
             "overall_smape": float(success_df["smape"].mean()) if not success_df.empty else None,
-            "avg_under20_hours": float(month_summary["under20"].mean()) if not month_summary.empty else None,
+            "overall_acc_rate": float((prediction_df["sape"] < 20.0).mean() * 100.0) if not prediction_df.empty else None,
+            "avg_under20_hours": float(month_summary["under20_hours"].mean()) if not month_summary.empty else None,
+            "months_below_30": int(month_summary["smape_below_30"].sum()) if not month_summary.empty else 0,
+            "months_acc_rate_ge_50": int(month_summary["monthly_acc_rate_ge_50"].sum()) if not month_summary.empty else 0,
+            "failed_months": month_summary.loc[
+                ~(month_summary["smape_below_30"] & month_summary["monthly_acc_rate_ge_50"]),
+                ["test_month", "smape", "monthly_acc_rate", "worst_hours"],
+            ].to_dict("records") if not month_summary.empty else [],
         }
         with open(log_dir / "monthly_backtest_overall.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def _band_smape(results_df: pd.DataFrame, hours: Iterable[int]) -> Dict[str, float]:
+        hour_set = set(hours)
+        band_df = results_df[results_df["hour"].isin(hour_set)]
+        return band_df.groupby("test_month")["smape"].mean().to_dict()
+
+    @staticmethod
+    def _worst_hours(results_df: pd.DataFrame, top_n: int = 5) -> Dict[str, str]:
+        result = {}
+        for month, group in results_df.groupby("test_month"):
+            worst = group.sort_values("smape", ascending=False).head(top_n)
+            result[month] = ";".join(f"H{int(row.hour):02d}:{float(row.smape):.2f}" for row in worst.itertuples())
+        return result
 
 
 def setup_logging() -> None:
@@ -229,8 +388,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-iter", type=int, default=0, help="每个小时随机搜索次数；0 表示默认参数")
     parser.add_argument("--cv-folds", type=int, default=3, help="时间序列交叉验证折数")
     parser.add_argument("--min-train-months", type=int, default=3, help="开始回测前至少保留的训练月份数")
-    parser.add_argument("--start-month", default=None, help="首个测试月份 YYYY-MM")
-    parser.add_argument("--end-month", default=None, help="最后测试月份 YYYY-MM")
+    parser.add_argument("--start-month", default=FORWARD_DEFAULT_START_MONTH, help="首个测试月份 YYYY-MM")
+    parser.add_argument("--end-month", default=FORWARD_DEFAULT_END_MONTH, help="最后测试月份 YYYY-MM")
     return parser.parse_args()
 
 

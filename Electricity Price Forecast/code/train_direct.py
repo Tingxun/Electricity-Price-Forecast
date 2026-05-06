@@ -74,6 +74,7 @@ class DirectTrainer:
         y_train = features_df.loc[split.train_mask, target_col].to_numpy()
         X_test = features_df.loc[split.test_mask, feature_cols].reset_index(drop=True)
         y_test = features_df.loc[split.test_mask, target_col].to_numpy()
+        train_dates = features_df.loc[split.train_mask, "预测日期"].reset_index(drop=True)
         test_dates_series = features_df.loc[split.test_mask, "预测日期"].reset_index(drop=True)
 
         scaler = None
@@ -87,6 +88,7 @@ class DirectTrainer:
             "y_train": y_train,
             "X_test": X_test,
             "y_test": y_test,
+            "train_dates": train_dates,
             "test_dates": test_dates_series,
             "feature_cols": feature_cols,
             "target_col": target_col,
@@ -106,11 +108,11 @@ class DirectTrainer:
             random_state=42 + hour,
         )
 
+        calibration = self._fit_pretest_calibration(best_params, data) if self.model_type.endswith("_v4") else {"scale": 1.0, "bias": 0.0, "clip_min": None}
         model = create_model(self.model_type, best_params)
         model.fit(data["X_train"], data["y_train"])
-        calibration = {"scale": 1.0, "bias": 0.0, "clip_min": None}
 
-        y_pred = model.predict(data["X_test"])
+        y_pred = self._apply_calibration(model.predict(data["X_test"]), calibration)
         test_mae = calculate_mae(data["y_test"], y_pred)
         test_rmse = calculate_rmse(data["y_test"], y_pred)
         test_smape = calculate_smape(data["y_test"], y_pred)
@@ -443,6 +445,27 @@ class DirectTrainer:
                     }
 
         return best
+
+    def _fit_pretest_calibration(self, params: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, float]:
+        train_dates = pd.to_datetime(data["train_dates"])
+        train_months = train_dates.dt.to_period("M")
+        validation_month = train_months.max()
+        fit_mask = train_months < validation_month
+        val_mask = train_months == validation_month
+
+        if int(fit_mask.sum()) < 30 or int(val_mask.sum()) < 7:
+            return {"scale": 1.0, "bias": 0.0, "clip_min": None}
+
+        try:
+            model = create_model(self.model_type, params)
+            model.fit(data["X_train"].loc[fit_mask].reset_index(drop=True), data["y_train"][fit_mask.to_numpy()])
+            val_pred = model.predict(data["X_train"].loc[val_mask].reset_index(drop=True))
+            calibration = self._fit_smape_calibration(val_pred, data["y_train"][val_mask.to_numpy()])
+            calibration["validation_month"] = str(validation_month)
+            return calibration
+        except Exception as exc:
+            logger.warning("H%02d 校准失败，回退默认校准: %s", data.get("hour", -1), exc)
+            return {"scale": 1.0, "bias": 0.0, "clip_min": None}
 
     @staticmethod
     def _apply_calibration(y_pred: np.ndarray, calibration: Dict[str, float]) -> np.ndarray:

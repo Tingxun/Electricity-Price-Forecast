@@ -19,6 +19,9 @@ from strategy_registry import all_strategy_names, ensure_implemented, list_strat
 
 logger = logging.getLogger(__name__)
 
+FORWARD_DEFAULT_START_MONTH = "2025-03"
+FORWARD_DEFAULT_END_MONTH = "2025-06"
+
 
 def setup_logging() -> None:
     log_dir = Config().get_result_path("logs")
@@ -125,8 +128,10 @@ def optimize_probe_mode(config: Config, args: argparse.Namespace) -> None:
         broad_alpha_step=args.broad_alpha_step,
     ).optimize(args.hours)
     ok = results[results["status"] == "success"]
-    best = ok.sort_values(["hour", "smape"]).groupby("hour", as_index=False).head(1)
-    print(best[["hour", "feature_variant", "smape", "mae", "rmse"]].to_string(index=False))
+    score_col = "generalization_score" if "generalization_score" in ok.columns else "smape"
+    best = ok.sort_values(["hour", score_col, "smape"]).groupby("hour", as_index=False).head(1)
+    display_cols = [col for col in ["hour", "feature_variant", "smape", "max_month_smape", "acc_rate", "generalization_score", "mae", "rmse"] if col in best.columns]
+    print(best[display_cols].to_string(index=False))
     print(f"\nBest-combined average sMAPE={best['smape'].mean():.2f}%")
 
 def list_mode() -> None:
@@ -171,8 +176,8 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_parser.add_argument("--n-iter", type=int, default=0, help="每个小时随机搜索次数；0 表示默认参数")
     backtest_parser.add_argument("--cv-folds", type=int, default=3, help="时间序列交叉验证折数")
     backtest_parser.add_argument("--min-train-months", type=int, default=3, help="开始回测前至少保留的训练月份数")
-    backtest_parser.add_argument("--start-month", default=None, help="首个测试月份 YYYY-MM")
-    backtest_parser.add_argument("--end-month", default=None, help="最后测试月份 YYYY-MM")
+    backtest_parser.add_argument("--start-month", default=FORWARD_DEFAULT_START_MONTH, help="首个测试月份 YYYY-MM")
+    backtest_parser.add_argument("--end-month", default=FORWARD_DEFAULT_END_MONTH, help="最后测试月份 YYYY-MM")
 
     optimize_parser = subparsers.add_parser("optimize-probe", help="LightGBM sMAPE 探针参数搜索")
     optimize_parser.add_argument("--model", default="lightgbm_smape_probe_v3", choices=list_model_types(), help="LightGBM 探针模型")

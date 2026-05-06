@@ -155,6 +155,10 @@ class DirectFeatureEngineer:
         # 1. 时间特征
         features['预测日期'] = target_date
         features['月份'] = target_date.month
+        for month in range(1, 13):
+            features[f'月份_{month}'] = 1 if target_date.month == month else 0
+        features['是否春季'] = 1 if target_date.month in [3, 4, 5] else 0
+        features['是否夏季'] = 1 if target_date.month in [6, 7, 8] else 0
         features['星期'] = target_date.dayofweek + 1
         features['是否周末'] = 1 if target_date.dayofweek >= 5 else 0
         features['季度'] = (target_date.month - 1) // 3 + 1
@@ -256,7 +260,7 @@ class DirectFeatureEngineer:
             features[f'历史价格_H{target_hour:02d}_T2低价标记'] = 1 if current_price <= 80 else 0
 
         # 同小时滚动统计：窗口均从T-2往前取，确保预测时可用
-        for window in self.price_windows:
+        for window in sorted(set([*self.price_windows, 21, 28])):
             prices = []
             for lag in range(2, window + 2):
                 lag_date = all_dates[date_index - lag]
@@ -269,12 +273,16 @@ class DirectFeatureEngineer:
 
             if prices:
                 values = np.asarray(prices, dtype=float)
-                prefix = f'历史价格_H{target_hour:02d}_近{window}日'
+                prefix = f'历史价格_H{target_hour:02d}_近{window}日' if window in self.price_windows else f'泛化历史价格_H{target_hour:02d}_近{window}日'
                 features[f'{prefix}_均值'] = float(values.mean())
                 features[f'{prefix}_标准差'] = float(values.std())
                 features[f'{prefix}_最小值'] = float(values.min())
                 features[f'{prefix}_最大值'] = float(values.max())
                 features[f'{prefix}_低价次数'] = int(np.sum(values <= 80))
+                general_prefix = f'泛化历史价格_H{target_hour:02d}_近{window}日'
+                features[f'{general_prefix}_近零次数'] = int(np.sum(values <= 20))
+                features[f'{general_prefix}_零价次数'] = int(np.sum(values <= 0))
+                features[f'{general_prefix}_低价占比'] = float(np.mean(values <= 80))
 
         if 2 in lag_values and 3 in lag_values:
             features[f'历史价格_H{target_hour:02d}_T2减T3'] = lag_values[2] - lag_values[3]
@@ -326,16 +334,15 @@ class DirectFeatureEngineer:
         if target_hour < 8 or target_hour > 15:
             return
         t_minus_2_data = daily_data.get(all_dates[date_index - 2])
+        t_minus_7_data = daily_data.get(all_dates[date_index - 7]) if date_index - 7 >= 0 else None
         if t_minus_2_data is None:
             return
 
-        hour_prices = []
-        for hour in range(8, 16):
-            price = self._get_hour_price(t_minus_2_data, hour)
-            if price is not None:
-                hour_prices.append((hour, price))
+        hour_prices = self._midday_hour_prices(t_minus_2_data)
         if len(hour_prices) != 8:
             return
+
+        t7_hour_prices = self._midday_hour_prices(t_minus_7_data) if t_minus_7_data is not None else []
 
         hours = np.asarray([item[0] for item in hour_prices], dtype=int)
         prices = np.asarray([item[1] for item in hour_prices], dtype=float)
@@ -350,12 +357,34 @@ class DirectFeatureEngineer:
         features['午间低价_T2_H08H15最大值'] = midday_max
         features['午间低价_T2_H08H15低价小时数'] = int(np.sum(prices <= 80))
         features['午间低价_T2_H08H15近零小时数'] = int(np.sum(prices <= 20))
+        features['泛化午间低价_T2_H08H15零价小时数'] = int(np.sum(prices <= 0))
+        features['泛化午间低价_T2_H08H15低价占比'] = float(np.mean(prices <= 80))
         features['午间低价_T2_谷底小时'] = valley_hour
         features['午间低价_T2_目标小时距谷底'] = int(target_hour - valley_hour)
         features[f'午间低价_H{target_hour:02d}_T2相对午间均值'] = float(current_price - midday_mean)
         features[f'午间低价_H{target_hour:02d}_T2日内位置'] = (
             float((current_price - midday_min) / (midday_max - midday_min)) if midday_max != midday_min else 0.0
         )
+
+        if len(t7_hour_prices) == 8:
+            t7_prices = np.asarray([item[1] for item in t7_hour_prices], dtype=float)
+            t2_centered = prices - prices.mean()
+            t7_centered = t7_prices - t7_prices.mean()
+            denominator = float(np.linalg.norm(t2_centered) * np.linalg.norm(t7_centered))
+            features['泛化午间低价_T2_T7曲线相关'] = float(np.dot(t2_centered, t7_centered) / denominator) if denominator else 0.0
+            features['泛化午间低价_T2_T7均值差'] = float(prices.mean() - t7_prices.mean())
+            features['泛化午间低价_T2_T7低价小时数差'] = int(np.sum(prices <= 80) - np.sum(t7_prices <= 80))
+            features['泛化午间低价_T2_T7零价小时数差'] = int(np.sum(prices <= 0) - np.sum(t7_prices <= 0))
+
+    def _midday_hour_prices(self, date_data: Optional[pd.DataFrame]) -> List[Tuple[int, float]]:
+        if date_data is None:
+            return []
+        hour_prices = []
+        for hour in range(8, 16):
+            price = self._get_hour_price(date_data, hour)
+            if price is not None:
+                hour_prices.append((hour, price))
+        return hour_prices
     
     def _add_hour_features(self, features: Dict, date_data: pd.DataFrame, 
                           hour: int, prefix: str):

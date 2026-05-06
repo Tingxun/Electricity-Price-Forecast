@@ -18,6 +18,13 @@ FEATURE_CONFIG: Dict = {
         "direct_time": {
             "features": ["月份", "星期", "是否周末", "季度"],
         },
+        "direct_time_v4": {
+            "features": [
+                "月份", "星期", "是否周末", "季度", "是否春季", "是否夏季",
+                "月份_1", "月份_2", "月份_3", "月份_4", "月份_5", "月份_6",
+                "月份_7", "月份_8", "月份_9", "月份_10", "月份_11", "月份_12",
+            ],
+        },
         "direct_time_midday": {
             "features": [
                 "月份",
@@ -36,11 +43,28 @@ FEATURE_CONFIG: Dict = {
                 "是否周日",
             ],
         },
+        "direct_time_midday_v4": {
+            "features": [
+                "月份", "星期", "是否周末", "季度", "是否春季", "是否夏季",
+                "月份_1", "月份_2", "月份_3", "月份_4", "月份_5", "月份_6",
+                "月份_7", "月份_8", "月份_9", "月份_10", "月份_11", "月份_12",
+                "星期_1", "星期_2", "星期_3", "星期_4", "星期_5", "星期_6", "星期_7",
+                "是否周三", "是否周六", "是否周日",
+            ],
+        },
         "direct_price_lag": {
             "patterns": [
                 r"^滞后\d+天_H\d{2}_价格$",
                 r"^滞后2天_H\d{2}_(前\d+h|后\d+h)_价格$",
                 r"^历史价格_",
+            ],
+        },
+        "direct_price_lag_v4": {
+            "patterns": [
+                r"^滞后\d+天_H\d{2}_价格$",
+                r"^滞后2天_H\d{2}_(前\d+h|后\d+h)_价格$",
+                r"^历史价格_",
+                r"^泛化历史价格_",
             ],
         },
         "direct_market_window": {
@@ -59,6 +83,14 @@ FEATURE_CONFIG: Dict = {
             "patterns": [
                 r"^同星期历史_",
                 r"^午间低价_",
+                r"^午间市场形态_",
+            ],
+        },
+        "direct_midday_regime_v4": {
+            "patterns": [
+                r"^同星期历史_",
+                r"^午间低价_",
+                r"^泛化午间低价_",
                 r"^午间市场形态_",
             ],
         },
@@ -225,6 +257,27 @@ FEATURE_CONFIG: Dict = {
         },
     },
 }
+
+def _v4_groups(groups: List[str]) -> List[str]:
+    replacements = {
+        "direct_time": "direct_time_v4",
+        "direct_time_midday": "direct_time_midday_v4",
+        "direct_price_lag": "direct_price_lag_v4",
+        "direct_midday_regime": "direct_midday_regime_v4",
+    }
+    return [replacements.get(group, group) for group in groups]
+
+
+_v4_feature_config = {
+    **FEATURE_CONFIG["model_features"]["lightgbm_smape_probe_v3"],
+    "description": "LightGBM Direct sMAPE 泛化探针模型 v4",
+}
+_v4_feature_config["feature_groups"] = _v4_groups(_v4_feature_config["feature_groups"])
+_v4_feature_config["hourly_overrides"] = {
+    hour: {**override, "feature_groups": _v4_groups(override["feature_groups"])}
+    for hour, override in _v4_feature_config.get("hourly_overrides", {}).items()
+}
+FEATURE_CONFIG["model_features"]["lightgbm_smape_probe_v4"] = _v4_feature_config
 
 
 class FeatureSelector:
