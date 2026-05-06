@@ -113,13 +113,14 @@ python code/main.py train --strategy direct --model lightgbm --test-months 2025-
 ```text
 lightgbm
 lightgbm_smape_probe
+lightgbm_smape_probe_v2
 xgboost
 random_forest
 ridge
 lasso
 ```
 
-`lightgbm_smape_probe` 是本轮 sMAPE 探针实验沉淀的 LightGBM 参数组：每个小时可以使用不同 objective / quantile alpha。它用于复现实验结果，不会覆盖标准 `lightgbm`。
+`lightgbm_smape_probe` 是当前正式 sMAPE 探针 LightGBM 参数组：每个小时可以使用不同 objective / quantile alpha，并对 H08/H09/H10/H13 启用 weather 特征组。`lightgbm_smape_probe_v2` 保留为同配置兼容别名，不覆盖标准 `lightgbm`。
 
 模型保存到：
 
@@ -205,9 +206,9 @@ python code/main.py evaluate --strategy direct --model lightgbm
 
 先用 `ridge` 快速验证数据和流程，再用 `lightgbm` 做主实验，会比较省时间。
 
-复现实验探针结果：
+复现正式探针结果：
 
 ```bash
-python code/main.py train --strategy direct --model lightgbm_smape_probe --n-iter 0
-python code/main.py evaluate --strategy direct --model lightgbm_smape_probe
+python code/main.py train --strategy direct --model lightgbm_smape_probe --test-months 2025-03 --n-iter 0
+python code/main.py evaluate --strategy direct --model lightgbm_smape_probe --test-months 2025-03
 ```

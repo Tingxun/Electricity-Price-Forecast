@@ -51,17 +51,19 @@ LIGHTGBM_SMAPE_PROBE_V2_PARAMS: Dict[int, Dict[str, Any]] = {
 
 LIGHTGBM_SMAPE_PROBE_V2_PARAMS.update(
     {
-        8: {"objective": "quantile", "alpha": 0.07, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
         5: {"objective": "quantile", "alpha": 0.35, "n_estimators": 200, "learning_rate": 0.08, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20},
         7: {"objective": "quantile", "alpha": 0.05, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20},
+        8: {"objective": "quantile", "alpha": 0.07, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20},
+        9: {"objective": "quantile", "alpha": 0.25, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
+        10: {"objective": "quantile", "alpha": 0.2, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20},
         11: {"objective": "quantile", "alpha": 0.8, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 30},
-        12: {"objective": "quantile", "alpha": 0.72, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20},
-        13: {"objective": "quantile", "alpha": 0.8, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 30},
-        14: {"objective": "quantile", "alpha": 0.76, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 15, "max_depth": 6, "min_child_samples": 10},
-        15: {"objective": "regression", "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
-        16: {"objective": "regression", "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20},
+        12: {"objective": "quantile", "alpha": 0.8, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
+        13: {"objective": "quantile", "alpha": 0.8, "n_estimators": 500, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 30},
+        14: {"objective": "quantile", "alpha": 0.74, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 15, "max_depth": 6, "min_child_samples": 10},
+        15: {"objective": "regression", "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 5, "min_child_samples": 10},
+        16: {"objective": "quantile", "alpha": 0.28, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 5},
         22: {"objective": "quantile", "alpha": 0.2, "n_estimators": 120, "learning_rate": 0.03, "num_leaves": 15, "max_depth": 6, "min_child_samples": 10},
-        23: {"objective": "quantile", "alpha": 0.08, "n_estimators": 300, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 30},
+        23: {"objective": "quantile", "alpha": 0.08, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 30},
     }
 )
 
@@ -73,6 +75,12 @@ def _with_common_lgbm_params(hourly_params: Dict[int, Dict[str, Any]]) -> None:
 
 _with_common_lgbm_params(LIGHTGBM_SMAPE_PROBE_PARAMS)
 _with_common_lgbm_params(LIGHTGBM_SMAPE_PROBE_V2_PARAMS)
+
+# Promote the current v2 probe as the official sMAPE probe while keeping the
+# v2 model name available as a reproducible alias.
+LIGHTGBM_SMAPE_PROBE_PARAMS = {
+    hour: params.copy() for hour, params in LIGHTGBM_SMAPE_PROBE_V2_PARAMS.items()
+}
 
 
 DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {

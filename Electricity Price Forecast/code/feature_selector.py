@@ -55,8 +55,14 @@ FEATURE_CONFIG: Dict = {
             "normalize": False,
         },
         "lightgbm_smape_probe": {
-            "description": "LightGBM Direct sMAPE探针参数组",
+            "description": "LightGBM Direct sMAPE探针参数组（正式版）",
             "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window"],
+            "hourly_overrides": {
+                8: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
+                9: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
+                10: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
+                13: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
+            },
             "normalize": False,
         },
         "lightgbm_smape_probe_v2": {
@@ -64,9 +70,9 @@ FEATURE_CONFIG: Dict = {
             "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window"],
             "hourly_overrides": {
                 8: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
-                12: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
+                9: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
+                10: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
                 13: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
-                16: {"feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"]},
             },
             "normalize": False,
         },
