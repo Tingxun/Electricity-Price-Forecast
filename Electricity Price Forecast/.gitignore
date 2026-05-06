@@ -1,4 +1,6 @@
 /results/
 /Hubei Province Energy Dataset/
 /saved_models/
+/data/features/
 __pycache__/
+*.bak_*
