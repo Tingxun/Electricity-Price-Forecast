@@ -1,14 +1,10 @@
-"""
-Feature selection for Direct multi-step models.
+"""Feature selection for Direct multi-step models."""
 
-Feature groups may contain exact feature names and regular-expression patterns,
-which keeps the model-specific feature selection compact for hourly/generated
-column names.
-"""
+from __future__ import annotations
 
 import logging
 import re
-from typing import Dict, Iterable, List, Set
+from typing import Dict, List, Set
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +37,7 @@ FEATURE_CONFIG: Dict = {
                 r"^滞后\d+天_H\d{2}_价格$",
                 r"^滞后2天_H\d{2}_(前\d+h|后\d+h)_价格$",
                 r"^历史价格_",
+                r"^泛化历史价格_",
             ],
         },
         "direct_market_window": {
@@ -59,6 +56,7 @@ FEATURE_CONFIG: Dict = {
             "patterns": [
                 r"^同星期历史_",
                 r"^午间低价_",
+                r"^泛化午间低价_",
                 r"^午间市场形态_",
             ],
         },
@@ -81,150 +79,43 @@ FEATURE_CONFIG: Dict = {
     },
     "model_features": {
         "lightgbm": {
-            "description": "LightGBM Direct 每小时独立模型",
+            "description": "LightGBM Direct baseline",
+            "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window"],
+            "normalize": False,
+        },
+        "lightgbm_auto": {
+            "description": "LightGBM Direct 自动结构/特征组选择模型",
             "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window"],
             "normalize": False,
         },
         "lightgbm_smape_probe": {
-            "description": "LightGBM Direct sMAPE 正式探针模型（v3）",
+            "description": "LightGBM Direct sMAPE 固定参数兼容基线",
             "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window"],
-            "hourly_overrides": {
-                **{
-                    hour: {
-                        "feature_groups": [
-                            "direct_time_midday",
-                            "direct_price_lag",
-                            "direct_market_window",
-                            "direct_weather_window",
-                            "direct_midday_regime",
-                            "direct_midday_weather_agg",
-                        ]
-                    }
-                    for hour in range(8, 16)
-                },
-                **{
-                    hour: {
-                        "feature_groups": [
-                            "direct_time_midday",
-                            "direct_price_lag",
-                            "direct_market_window",
-                        ]
-                    }
-                    for hour in [1, 2, 3, 6, 7, 21]
-                },
-                **{
-                    hour: {
-                        "feature_groups": [
-                            "direct_time_midday",
-                            "direct_price_lag",
-                            "direct_market_window",
-                            "direct_weather_window",
-                        ]
-                    }
-                    for hour in [16, 18, 20]
-                },
-                19: {
-                    "feature_groups": [
-                        "direct_time",
-                        "direct_price_lag",
-                        "direct_market_window",
-                        "direct_weather_window",
-                    ]
-                },
-            },
-            "normalize": False,
-        },
-        "lightgbm_smape_probe_v3": {
-            "description": "LightGBM Direct sMAPE 探针模型 v3",
-            "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window"],
-            "hourly_overrides": {
-                **{
-                    hour: {
-                        "feature_groups": [
-                            "direct_time_midday",
-                            "direct_price_lag",
-                            "direct_market_window",
-                            "direct_weather_window",
-                            "direct_midday_regime",
-                            "direct_midday_weather_agg",
-                        ]
-                    }
-                    for hour in range(8, 16)
-                },
-                **{
-                    hour: {
-                        "feature_groups": [
-                            "direct_time_midday",
-                            "direct_price_lag",
-                            "direct_market_window",
-                        ]
-                    }
-                    for hour in [1, 2, 3, 6, 7, 21]
-                },
-                **{
-                    hour: {
-                        "feature_groups": [
-                            "direct_time_midday",
-                            "direct_price_lag",
-                            "direct_market_window",
-                            "direct_weather_window",
-                        ]
-                    }
-                    for hour in [16, 18, 20]
-                },
-                19: {
-                    "feature_groups": [
-                        "direct_time",
-                        "direct_price_lag",
-                        "direct_market_window",
-                        "direct_weather_window",
-                    ]
-                },
-            },
             "normalize": False,
         },
         "xgboost": {
-            "description": "XGBoost Direct 每小时独立模型",
-            "feature_groups": [
-                "direct_time",
-                "direct_price_lag",
-                "direct_market_window",
-                "direct_weather_window",
-            ],
+            "description": "XGBoost Direct baseline",
+            "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"],
             "normalize": False,
         },
         "random_forest": {
-            "description": "RandomForest Direct 每小时独立模型",
-            "feature_groups": [
-                "direct_time",
-                "direct_price_lag",
-                "direct_market_window",
-                "direct_weather_window",
-            ],
+            "description": "RandomForest Direct baseline",
+            "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"],
             "normalize": False,
         },
         "ridge": {
-            "description": "Ridge Direct 线性基线",
-            "feature_groups": [
-                "direct_time",
-                "direct_price_lag",
-                "direct_market_window",
-                "direct_weather_window",
-            ],
+            "description": "Ridge Direct linear baseline",
+            "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"],
             "normalize": True,
         },
         "lasso": {
-            "description": "Lasso Direct 线性基线",
-            "feature_groups": [
-                "direct_time",
-                "direct_price_lag",
-                "direct_market_window",
-                "direct_weather_window",
-            ],
+            "description": "Lasso Direct linear baseline",
+            "feature_groups": ["direct_time", "direct_price_lag", "direct_market_window", "direct_weather_window"],
             "normalize": True,
         },
     },
 }
+
 
 class FeatureSelector:
     """Select model-specific features from available columns."""
@@ -299,35 +190,19 @@ class FeatureSelector:
         if group is None:
             logger.warning("特征组不存在: %s", group_name)
             return set()
-
-        if isinstance(group, list):
-            return set(self._existing(group, available_features))
-
-        features = set(self._existing(group.get("features", []), available_features))
-        features.update(self._match_patterns(group.get("patterns", []), available_features))
-        return features
+        selected = set(self._existing(group.get("features", []), available_features))
+        selected.update(self._match_patterns(group.get("patterns", []), available_features))
+        return selected
 
     @staticmethod
-    def _existing(features: Iterable[str], available_features: List[str]) -> List[str]:
+    def _existing(features: List[str], available_features: List[str]) -> List[str]:
         available = set(available_features)
         return [feature for feature in features if feature in available]
 
     @staticmethod
-    def _match_patterns(patterns: Iterable[str], available_features: List[str]) -> List[str]:
+    def _match_patterns(patterns: List[str], available_features: List[str]) -> Set[str]:
         matched: Set[str] = set()
         for pattern in patterns:
             regex = re.compile(pattern)
             matched.update(feature for feature in available_features if regex.search(feature))
-        return sorted(matched)
-
-
-def main() -> None:
-    selector = FeatureSelector()
-    print("Configured Direct models:")
-    for model_name in selector.list_all_models():
-        info = selector.get_model_feature_info(model_name)
-        print(f"- {model_name}: {info['description']}")
-
-
-if __name__ == "__main__":
-    main()
+        return matched

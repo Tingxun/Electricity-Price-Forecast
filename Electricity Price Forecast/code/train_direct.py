@@ -25,9 +25,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from config import Config
+from auto_model_selection import AutoCandidate, generate_auto_candidates, monthly_time_series_folds
 from data_split import split_by_months
 from feature_engineering_direct import DirectFeatureEngineer
 from feature_selector import FeatureSelector
+from model_store import model_run_dir
 from model_factory import create_model, get_default_params, get_param_space, list_model_types
 from utils.metrics import calculate_mae, calculate_rmse, calculate_smape, calculate_accuracy_rate
 
@@ -53,9 +55,11 @@ class DirectTrainer:
         self.cv_folds = cv_folds
         self.test_months = test_months or config.split_config.get("test_months")
         self.feature_selector = FeatureSelector()
-        self.model_dir = model_dir or (config.get_model_path("direct") / model_type)
-        self.feature_importance_dir = config.get_result_path("logs") / "direct" / model_type / "feature_importance"
-        self.model_dir.mkdir(parents=True, exist_ok=True)
+        self.model_dir: Optional[Path] = model_dir
+        self.feature_importance_dir: Optional[Path] = None
+        self.test_period: Optional[str] = None
+        if self.model_dir is not None:
+            self.model_dir.mkdir(parents=True, exist_ok=True)
 
     def prepare_hourly_data(self, hour: int) -> Dict[str, Any]:
         engineer = DirectFeatureEngineer()
@@ -69,11 +73,14 @@ class DirectTrainer:
         feature_info = self.feature_selector.get_model_feature_info(self.model_type)
 
         split = split_by_months(features_df, "预测日期", self.test_months)
+        self._ensure_run_dirs(split.test_period)
 
         X_train = features_df.loc[split.train_mask, feature_cols].reset_index(drop=True)
         y_train = features_df.loc[split.train_mask, target_col].to_numpy()
         X_test = features_df.loc[split.test_mask, feature_cols].reset_index(drop=True)
         y_test = features_df.loc[split.test_mask, target_col].to_numpy()
+        full_X_train = features_df.loc[split.train_mask, numeric_features].reset_index(drop=True)
+        full_X_test = features_df.loc[split.test_mask, numeric_features].reset_index(drop=True)
         train_dates = features_df.loc[split.train_mask, "预测日期"].reset_index(drop=True)
         test_dates_series = features_df.loc[split.test_mask, "预测日期"].reset_index(drop=True)
 
@@ -88,6 +95,9 @@ class DirectTrainer:
             "y_train": y_train,
             "X_test": X_test,
             "y_test": y_test,
+            "full_X_train": full_X_train,
+            "full_X_test": full_X_test,
+            "numeric_features": numeric_features,
             "train_dates": train_dates,
             "test_dates": test_dates_series,
             "feature_cols": feature_cols,
@@ -101,12 +111,36 @@ class DirectTrainer:
         start = time.time()
         data = self.prepare_hourly_data(hour)
 
-        best_params, best_cv_smape = self._search_best_params(
-            data["X_train"],
-            data["y_train"],
-            hour=hour,
-            random_state=42 + hour,
-        )
+        if self._uses_auto_structure_search():
+            selection_info = self._select_auto_structure(data, hour)
+            data["feature_cols"] = selection_info["feature_cols"]
+            data["X_train"] = data["full_X_train"][data["feature_cols"]].reset_index(drop=True)
+            data["X_test"] = data["full_X_test"][data["feature_cols"]].reset_index(drop=True)
+            data["scaler"] = None
+            best_params, best_cv_smape, hyperparameter_results = self._search_best_params(
+                data["X_train"],
+                data["y_train"],
+                hour=hour,
+                random_state=42 + hour,
+                dates=data["train_dates"],
+                base_params=selection_info["selected_params"],
+            )
+            training_mode = "auto_structure_hyperparameter_search"
+        else:
+            selection_info = self._default_selection_info(data, hour)
+            best_params, best_cv_smape, hyperparameter_results = self._search_best_params(
+                data["X_train"],
+                data["y_train"],
+                hour=hour,
+                random_state=42 + hour,
+                dates=data["train_dates"],
+                base_params=selection_info["selected_params"],
+            )
+            training_mode = (
+                "fixed_default"
+                if self.n_iter <= 0 or not get_param_space(self.model_type)
+                else "hyperparameter_search"
+            )
 
         model = create_model(self.model_type, best_params)
         model.fit(data["X_train"], data["y_train"])
@@ -132,17 +166,35 @@ class DirectTrainer:
         elapsed = time.time() - start
         metadata = {
             "model_type": self.model_type,
+            "test_period": data["split_info"]["test_period"],
+            "test_months": data["split_info"]["test_months"],
             "hour": hour,
             "target_col": data["target_col"],
             "feature_cols": data["feature_cols"],
             "best_params": best_params,
+            "default_params": get_default_params(self.model_type, hour=hour),
+            "training_mode": training_mode,
+            "training_window": {
+                "start": data["split_info"]["train_start"],
+                "end": data["split_info"]["train_end"],
+                "n_samples": data["split_info"]["n_train"],
+            },
+            "selected_structure": selection_info["selected_structure"],
+            "selected_feature_groups": selection_info["selected_feature_groups"],
+            "candidate_rankings": selection_info["candidate_rankings"],
+            "cv_metrics": selection_info["cv_metrics"],
+            "hyperparameter_results": hyperparameter_results,
+            "n_iter": self.n_iter,
+            "cv_folds": self.cv_folds,
             "split_info": data["split_info"],
             "best_cv_smape": best_cv_smape,
             "test_mae": test_mae,
             "test_rmse": test_rmse,
             "test_smape": test_smape,
             "test_acc_rate": test_acc_rate,
+            "selected_structure": selection_info["selected_structure"],
             "training_time": elapsed,
+            "model_path": str(model_path),
             "feature_importance_path": str(feature_importance_path),
             "trained_at": datetime.now().isoformat(timespec="seconds"),
         }
@@ -169,6 +221,17 @@ class DirectTrainer:
             "feature_importance_path": str(feature_importance_path),
         }
 
+    def _ensure_run_dirs(self, test_period: str) -> None:
+        if self.test_period is None:
+            self.test_period = test_period
+        elif self.test_period != test_period:
+            raise ValueError(f"同一次训练中检测到不一致的测试月份: {self.test_period} vs {test_period}")
+
+        if self.model_dir is None:
+            self.model_dir = model_run_dir(self.config, self.model_type, test_period)
+        self.model_dir.mkdir(parents=True, exist_ok=True)
+        self.feature_importance_dir = self.model_dir / "feature_importance"
+
     def train(self, hours: Optional[List[int]] = None) -> pd.DataFrame:
         if hours is None:
             hours = list(range(24))
@@ -183,10 +246,14 @@ class DirectTrainer:
 
         results_df = pd.DataFrame(results)
         self._save_report(results_df)
+        self._save_model_manifest(results_df)
+        self._save_auto_search_summaries(results_df)
         self._save_feature_selection_summary(results_df)
         return results_df
 
     def _save_feature_importance(self, hour: int, model: Any, feature_cols: List[str]) -> Path:
+        if self.feature_importance_dir is None:
+            self.feature_importance_dir = self.model_dir / "feature_importance"
         self.feature_importance_dir.mkdir(parents=True, exist_ok=True)
         raw_importance, source = self._extract_feature_importance(model, feature_cols)
 
@@ -353,18 +420,132 @@ class DirectTrainer:
         summary_df.to_csv(path, index=False, encoding="utf-8-sig")
         logger.info("特征选中率汇总已保存: %s", path)
 
+    def _uses_auto_structure_search(self) -> bool:
+        return self.model_type == "lightgbm_auto" and self.n_iter > 0
+
+    def _default_selection_info(self, data: Dict[str, Any], hour: int) -> Dict[str, Any]:
+        feature_info = self.feature_selector.get_model_feature_info(self.model_type)
+        selected_params = get_default_params(self.model_type, hour=hour)
+        return {
+            "selected_structure": "fixed_default",
+            "selected_feature_groups": feature_info.get("feature_groups", []),
+            "selected_params": selected_params,
+            "feature_cols": data["feature_cols"],
+            "candidate_rankings": [],
+            "cv_metrics": [],
+        }
+
+    def _select_auto_structure(self, data: Dict[str, Any], hour: int) -> Dict[str, Any]:
+        folds = monthly_time_series_folds(data["train_dates"], self.cv_folds)
+        default_params = get_default_params(self.model_type, hour=hour)
+        candidates = generate_auto_candidates(hour, default_params, data["y_train"], folds)
+
+        rankings = []
+        for candidate in candidates:
+            try:
+                feature_cols = self._feature_cols_for_candidate(candidate, data["numeric_features"])
+                X_candidate = data["full_X_train"][feature_cols].reset_index(drop=True)
+                fold_metrics = self._cross_val_metrics(candidate.params, X_candidate, data["y_train"], folds)
+                mean_smape = float(np.mean([metric["smape"] for metric in fold_metrics]))
+                worst_smape = float(np.max([metric["smape"] for metric in fold_metrics]))
+                selection_score = mean_smape + candidate.complexity_penalty + 0.10 * max(0.0, worst_smape - mean_smape)
+                rankings.append(
+                    {
+                        **candidate.to_dict(),
+                        "feature_cols": feature_cols,
+                        "mean_smape": mean_smape,
+                        "worst_smape": worst_smape,
+                        "selection_score": float(selection_score),
+                        "fold_metrics": fold_metrics,
+                    }
+                )
+            except Exception as exc:
+                logger.warning("H%02d 自动候选 %s 失败: %s", hour, candidate.name, exc)
+                rankings.append(
+                    {
+                        **candidate.to_dict(),
+                        "status": "failed",
+                        "error": str(exc),
+                        "selection_score": float("inf"),
+                    }
+                )
+
+        valid_rankings = [row for row in rankings if np.isfinite(row.get("selection_score", float("inf")))]
+        if not valid_rankings:
+            raise ValueError(f"H{hour:02d} 没有可用的自动结构候选")
+
+        valid_rankings.sort(key=lambda row: (row["selection_score"], row["mean_smape"]))
+        for rank, row in enumerate(valid_rankings, start=1):
+            row["rank"] = rank
+
+        selected = valid_rankings[0]
+        logger.info(
+            "H%02d 自动结构选择: %s, CV_sMAPE=%.4f, score=%.4f",
+            hour,
+            selected["name"],
+            selected["mean_smape"],
+            selected["selection_score"],
+        )
+        return {
+            "selected_structure": selected["structure"],
+            "selected_feature_groups": selected["feature_groups"],
+            "selected_params": selected["params"],
+            "feature_cols": selected["feature_cols"],
+            "candidate_rankings": valid_rankings,
+            "cv_metrics": selected["fold_metrics"],
+        }
+
+    def _feature_cols_for_candidate(self, candidate: AutoCandidate, available_features: List[str]) -> List[str]:
+        if candidate.structure == "feature_ensemble":
+            groups = candidate.feature_groups
+        else:
+            groups = candidate.params.get("feature_groups") or candidate.feature_groups
+        return self.feature_selector.select_features_from_groups(groups, available_features)
+
+    def _cross_val_metrics(
+        self,
+        params: Dict[str, Any],
+        X: pd.DataFrame,
+        y: np.ndarray,
+        folds: Iterable[Tuple[np.ndarray, np.ndarray, str]],
+    ) -> List[Dict[str, Any]]:
+        metrics = []
+        for train_idx, val_idx, validation_month in folds:
+            model = create_model(self.model_type, params)
+            model.fit(X.iloc[train_idx], y[train_idx])
+            pred = model.predict(X.iloc[val_idx])
+            metrics.append(
+                {
+                    "validation_month": validation_month,
+                    "n_train": int(len(train_idx)),
+                    "n_val": int(len(val_idx)),
+                    "mae": calculate_mae(y[val_idx], pred),
+                    "smape": calculate_smape(y[val_idx], pred),
+                    "acc_rate": calculate_accuracy_rate(y[val_idx], pred, threshold=20.0),
+                }
+            )
+        return metrics
+
     def _search_best_params(
         self,
         X_train: pd.DataFrame,
         y_train: np.ndarray,
         hour: int,
         random_state: int,
-    ) -> Tuple[Dict[str, Any], float]:
-        default_params = get_default_params(self.model_type, hour=hour)
+        dates: Optional[pd.Series] = None,
+        base_params: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Dict[str, Any], float, List[Dict[str, Any]]]:
+        default_params = (base_params or get_default_params(self.model_type, hour=hour)).copy()
         param_space = get_param_space(self.model_type)
+        try:
+            folds = monthly_time_series_folds(dates, self.cv_folds) if dates is not None else None
+        except ValueError as exc:
+            logger.warning("按月时间序列 CV 不可用，回退到样本顺序 CV: %s", exc)
+            folds = None
 
         if self.n_iter <= 0 or not param_space:
-            return default_params, self._cross_val_smape(default_params, X_train, y_train)
+            score = self._cross_val_smape(default_params, X_train, y_train, folds=folds)
+            return default_params, score, [{"params": default_params, "cv_smape": score, "rank": 1}]
 
         sampler = ParameterSampler(param_space, n_iter=self.n_iter, random_state=random_state)
         best_params = default_params
@@ -417,12 +598,216 @@ class DirectTrainer:
                 continue
             yield np.arange(0, train_end), np.arange(train_end, val_end)
 
+    @staticmethod
+    def _merge_tuned_params(base_params: Dict[str, Any], tuned_params: Dict[str, Any]) -> Dict[str, Any]:
+        merged = base_params.copy()
+        if merged.get("model_kind") == "feature_ensemble":
+            merged["members"] = []
+            for member in base_params.get("members", []):
+                member_copy = member.copy()
+                member_params = member_copy.get("params", {}).copy()
+                member_params.update(tuned_params)
+                member_copy["params"] = member_params
+                merged["members"].append(member_copy)
+            return merged
+
+        structural_keys = {
+            "model_kind",
+            "feature_groups",
+            "sample_weight_mode",
+            "low_sample_weight_mode",
+            "low_price_threshold",
+            "prob_threshold",
+            "blend",
+        }
+        preserved = {key: value for key, value in merged.items() if key in structural_keys}
+        return {**tuned_params, **preserved}
+
+    def _search_best_params(
+        self,
+        X_train: pd.DataFrame,
+        y_train: np.ndarray,
+        hour: int,
+        random_state: int,
+        dates: Optional[pd.Series] = None,
+        base_params: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Dict[str, Any], float, List[Dict[str, Any]]]:
+        default_params = (base_params or get_default_params(self.model_type, hour=hour)).copy()
+        param_space = get_param_space(self.model_type)
+        try:
+            folds = monthly_time_series_folds(dates, self.cv_folds) if dates is not None else None
+        except ValueError as exc:
+            logger.warning("按月时间序列 CV 不可用，回退到样本顺序 CV: %s", exc)
+            folds = None
+
+        if self.n_iter <= 0 or not param_space:
+            score = self._cross_val_smape(default_params, X_train, y_train, folds=folds)
+            return default_params, score, [{"params": default_params, "cv_smape": score, "rank": 1}]
+
+        sampler = ParameterSampler(param_space, n_iter=self.n_iter, random_state=random_state)
+        best_params = default_params
+        best_score = float("inf")
+        search_results: List[Dict[str, Any]] = []
+
+        for i, sampled_params in enumerate(sampler, start=1):
+            params = self._merge_tuned_params(default_params, dict(sampled_params))
+            try:
+                score = self._cross_val_smape(params, X_train, y_train, folds=folds)
+            except Exception as exc:
+                logger.warning("鍙傛暟缁勫悎 %s 澶辫触: %s", i, exc)
+                search_results.append({"iteration": i, "params": params, "status": "failed", "error": str(exc)})
+                continue
+
+            search_results.append({"iteration": i, "params": params, "cv_smape": score, "status": "success"})
+            if score < best_score:
+                best_score = score
+                best_params = dict(params)
+                logger.info("  鏂版渶浼?[%s/%s]: CV_sMAPE=%.4f", i, self.n_iter, score)
+
+        if not np.isfinite(best_score):
+            best_score = self._cross_val_smape(best_params, X_train, y_train, folds=folds)
+            search_results.append(
+                {"iteration": "fallback_default", "params": best_params, "cv_smape": best_score, "status": "success"}
+            )
+
+        ranked = sorted(
+            [row for row in search_results if row.get("status") == "success"],
+            key=lambda row: row["cv_smape"],
+        )
+        for rank, row in enumerate(ranked, start=1):
+            row["rank"] = rank
+
+        return best_params, best_score, search_results
+
+    def _cross_val_smape(
+        self,
+        params: Dict[str, Any],
+        X: pd.DataFrame,
+        y: np.ndarray,
+        folds: Optional[Iterable[Tuple[np.ndarray, np.ndarray, str]]] = None,
+    ) -> float:
+        if folds is None:
+            fold_iter = [(train_idx, val_idx, "") for train_idx, val_idx in self._time_series_folds(len(X), self.cv_folds)]
+        else:
+            fold_iter = folds
+
+        scores = []
+        for train_idx, val_idx, _ in fold_iter:
+            model = create_model(self.model_type, params)
+            model.fit(X.iloc[train_idx], y[train_idx])
+            pred = model.predict(X.iloc[val_idx])
+            scores.append(calculate_smape(y[val_idx], pred))
+        return float(np.mean(scores))
+
     def _save_report(self, results_df: pd.DataFrame) -> None:
+        if self.model_dir is None:
+            self._ensure_run_dirs(self.test_period or "auto")
         self.model_dir.mkdir(parents=True, exist_ok=True)
         report_csv = self.model_dir / "training_report.csv"
         report_json = self.model_dir / "training_report.json"
         results_df.to_csv(report_csv, index=False, encoding="utf-8-sig")
         results_df.to_json(report_json, orient="records", force_ascii=False, indent=2)
+
+    def _save_model_manifest(self, results_df: pd.DataFrame) -> None:
+        if self.model_dir is None:
+            self._ensure_run_dirs(self.test_period or "auto")
+        self.model_dir.mkdir(parents=True, exist_ok=True)
+        metadata_by_hour = {}
+        best_params_by_hour = {}
+        selected_structure_by_hour = {}
+        for row in results_df.itertuples(index=False):
+            if getattr(row, "status", None) != "success":
+                continue
+            hour = int(row.hour)
+            metadata_path = self.model_dir / f"metadata_H{hour:02d}.json"
+            if not metadata_path.exists():
+                continue
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+            metadata_by_hour[f"H{hour:02d}"] = metadata
+            best_params_by_hour[f"H{hour:02d}"] = metadata.get("best_params", {})
+            selected_structure_by_hour[f"H{hour:02d}"] = metadata.get("selected_structure")
+
+        manifest = {
+            "model_type": self.model_type,
+            "test_period": self.test_period,
+            "model_dir": str(self.model_dir),
+            "n_iter": self.n_iter,
+            "cv_folds": self.cv_folds,
+            "training_mode": (
+                "fixed_default"
+                if self.n_iter <= 0
+                else "auto_structure_hyperparameter_search"
+                if self.model_type == "lightgbm_auto"
+                else "hyperparameter_search"
+            ),
+            "hours": sorted(metadata_by_hour),
+            "trained_at": datetime.now().isoformat(timespec="seconds"),
+            "best_params_by_hour": best_params_by_hour,
+            "selected_structure_by_hour": selected_structure_by_hour,
+            "metadata_by_hour": metadata_by_hour,
+        }
+        with open(self.model_dir / "manifest.json", "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        with open(self.model_dir / "best_params_by_hour.json", "w", encoding="utf-8") as f:
+            json.dump(best_params_by_hour, f, ensure_ascii=False, indent=2)
+
+    def _save_auto_search_summaries(self, results_df: pd.DataFrame) -> None:
+        if self.model_dir is None:
+            return
+
+        structure_rows = []
+        hyperparameter_rows = []
+        for row in results_df.itertuples(index=False):
+            if getattr(row, "status", None) != "success":
+                continue
+            hour = int(row.hour)
+            metadata_path = self.model_dir / f"metadata_H{hour:02d}.json"
+            if not metadata_path.exists():
+                continue
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+
+            for candidate in metadata.get("candidate_rankings", []):
+                structure_rows.append(
+                    {
+                        "hour": hour,
+                        "rank": candidate.get("rank"),
+                        "candidate": candidate.get("name"),
+                        "structure": candidate.get("structure"),
+                        "feature_groups": ",".join(candidate.get("feature_groups", [])),
+                        "mean_smape": candidate.get("mean_smape"),
+                        "worst_smape": candidate.get("worst_smape"),
+                        "selection_score": candidate.get("selection_score"),
+                        "complexity_penalty": candidate.get("complexity_penalty"),
+                    }
+                )
+
+            for item in metadata.get("hyperparameter_results", []):
+                hyperparameter_rows.append(
+                    {
+                        "hour": hour,
+                        "rank": item.get("rank"),
+                        "iteration": item.get("iteration"),
+                        "status": item.get("status", "success"),
+                        "cv_smape": item.get("cv_smape"),
+                        "params": json.dumps(item.get("params", {}), ensure_ascii=False),
+                        "error": item.get("error"),
+                    }
+                )
+
+        if structure_rows:
+            pd.DataFrame(structure_rows).to_csv(
+                self.model_dir / "structure_search_results.csv",
+                index=False,
+                encoding="utf-8-sig",
+            )
+        if hyperparameter_rows:
+            pd.DataFrame(hyperparameter_rows).to_csv(
+                self.model_dir / "hyperparameter_search_results.csv",
+                index=False,
+                encoding="utf-8-sig",
+            )
 
 
 def setup_logging() -> None:
@@ -443,6 +828,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="lightgbm", choices=list_model_types(), help="基模型类型")
     parser.add_argument("--hours", type=int, nargs="+", default=None, help="指定训练小时，如: --hours 0 8 12")
     parser.add_argument("--n-iter", type=int, default=20, help="每个小时的随机搜索次数；0 表示使用默认参数")
+    parser.add_argument("--fixed-params", action="store_true", help="跳过超参数调优，直接使用模型工厂注册的默认固化参数")
     parser.add_argument("--cv-folds", type=int, default=3, help="时间序列交叉验证折数")
     parser.add_argument("--test-months", nargs="+", default=None, help="测试月份 YYYY-MM；可传多个，默认使用最后一个可用月份")
     return parser.parse_args()
@@ -451,7 +837,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     setup_logging()
     args = parse_args()
-    trainer = DirectTrainer(Config(), args.model, args.n_iter, args.cv_folds, test_months=args.test_months)
+    n_iter = 0 if args.fixed_params else args.n_iter
+    trainer = DirectTrainer(Config(), args.model, n_iter, args.cv_folds, test_months=args.test_months)
     results = trainer.train(args.hours)
 
 if __name__ == "__main__":

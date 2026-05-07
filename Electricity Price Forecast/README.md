@@ -1,98 +1,85 @@
-# 湖北省日前电价预测项目
+# Electricity Price Forecast
 
-本项目采用 Direct 24 小时独立建模框架预测日前电价：每个目标小时训练一个独立模型。当前正式模型是 `lightgbm_smape_probe`，实验复现别名是 `lightgbm_smape_probe_v3`。
+本项目采用 Direct 24 小时独立建模框架预测日前电价：每个目标小时训练一个独立模型。
 
-详细优化过程、参数调优、特征工程和模型集成说明见 [lightgbm_smape_probe优化技术文档.md](./lightgbm_smape_probe优化技术文档.md)。
-
-## 项目结构
-
-```text
-code/main.py                         统一 CLI 入口
-code/feature_engineering_direct.py   Direct 特征工程
-code/feature_selector.py             特征组与模型特征路由
-code/model_factory.py                模型注册、参数与集成封装
-code/probe_optimizer.py              LightGBM 探针优化
-code/train_direct.py                 训练入口
-code/evaluate_direct.py              评估入口
-code/backtest_direct.py              月份滚动回测
-data/features/direct/                每小时特征文件 features_Hxx.csv
-saved_models/direct/                 训练后的每小时模型
-results/logs/direct/                 评估、回测和探针日志
-results/predictions/direct/          测试集预测结果
-```
+当前推荐正式训练入口是 `lightgbm_auto`。训练时会把目标测试月之前的全部数据作为训练窗口，在训练窗口内用按月滚动的时间序列交叉验证选择结构/特征组，再对胜出结构做超参数搜索，最后用完整训练窗口重训并保存模型。测试月只用于最终评估，不参与结构选择或参数搜索。
 
 ## 可用模型
 
-```text
-lightgbm
-lightgbm_smape_probe
-lightgbm_smape_probe_v3
-xgboost
-random_forest
-ridge
-lasso
+```bash
+python code/main.py list
 ```
 
-说明：
+主要模型：
 
-- `lightgbm_smape_probe`：当前正式模型，已集成 v3 午间与非午间优化。
-- `lightgbm_smape_probe_v3`：与正式模型同配置，用于复现实验命名。
-- `lightgbm`：普通 LightGBM 基线，不包含 sMAPE 探针参数和特征组集成。
+- `lightgbm_auto`：自动结构/特征组选择 + 可选超参数搜索的推荐模型。
+- `lightgbm`：LightGBM 固定结构基线。
+- `xgboost`、`random_forest`、`ridge`、`lasso`：对照基线。
 
-## 快速运行
+## 基本流程
 
-生成 Direct 特征：
+生成特征：
 
 ```bash
 python code/main.py features --strategy direct
 ```
 
-训练正式模型：
+固定参数训练：
 
 ```bash
-python code/main.py train --strategy direct --model lightgbm_smape_probe --test-months 2025-03 --n-iter 0
+python code/main.py train --strategy direct --model lightgbm_auto --test-months 2025-03 --fixed-params
 ```
 
-评估正式模型：
+自动结构选择并调参：
 
 ```bash
-python code/main.py evaluate --strategy direct --model lightgbm_smape_probe --test-months 2025-03
+python code/main.py train --strategy direct --model lightgbm_auto --test-months 2025-03 --n-iter 20 --cv-folds 3
 ```
 
-滚动回测：
+只训练部分小时：
 
 ```bash
-python code/main.py backtest --strategy direct --model lightgbm_smape_probe --n-iter 0 --min-train-months 3
+python code/main.py train --strategy direct --model lightgbm_auto --test-months 2025-03 --hours 0 1 2
 ```
 
-运行探针优化：
+评估指定测试月模型：
 
 ```bash
-python code/main.py optimize-probe --model lightgbm_smape_probe_v3 --hours 8 9 10 11 12 13 14 15 --test-months 2025-03 --max-candidates 180
+python code/main.py evaluate --strategy direct --model lightgbm_auto --test-months 2025-03
 ```
 
-## 当前结果
+预测时可指定使用哪个测试月训练出的模型；不指定时默认读取最新保存版本：
+
+```bash
+python code/main.py predict --strategy direct --model lightgbm_auto --date 2025-04-01 --test-months 2025-03
+```
+
+完整执行特征、训练、评估：
+
+```bash
+python code/main.py run-all --strategy direct --model lightgbm_auto --test-months 2025-03 --n-iter 20
+```
+
+## 模型保存
+
+训练产物按模型和测试期版本化保存：
 
 ```text
-2025-03 正式 lightgbm_smape_probe:
-平均 MAE   = 48.9706
-平均 RMSE  = 74.7014
-平均 sMAPE = 23.94%
-under20    = 13/24
-H00-H07 平均 sMAPE = 15.55%
-H08-H15 平均 sMAPE = 36.10%
-H16-H23 平均 sMAPE = 20.16%
+saved_models/direct/<model_type>/<test_period>/
 ```
 
-滚动回测：
+每个小时保存：
 
-```text
-2025-02 单月 sMAPE = 27.16%
-2024-09 至 2025-03 overall sMAPE = 38.47%
-```
+- `model_Hxx.pkl`
+- `metadata_Hxx.json`
+- `feature_importance/feature_importance_Hxx.csv`
 
-## 文档索引
+运行级别保存：
 
-- [电价预测实验状态.md](./电价预测实验状态.md)：当前实验状态和复现命令。
-- [lightgbm_smape_probe优化技术文档.md](./lightgbm_smape_probe优化技术文档.md)：完整优化过程和技术说明。
-- [电价预测数据分析报告.md](./电价预测数据分析报告.md)：数据探索分析报告。
+- `manifest.json`
+- `best_params_by_hour.json`
+- `training_report.csv`
+- `structure_search_results.csv`
+- `hyperparameter_search_results.csv`
+
+`metadata_Hxx.json` 会记录测试期、训练窗口、训练模式、入选结构、入选特征组、候选结构排名、CV 指标、最佳参数和最终测试月指标。

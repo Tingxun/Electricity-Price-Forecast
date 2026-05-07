@@ -10,17 +10,18 @@ CODE_DIR = PROJECT_ROOT / "code"
 if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
 
+from auto_model_selection import generate_auto_candidates, monthly_time_series_folds
 from data_split import split_by_months
-from probe_optimizer import LightGBMProbeOptimizer
-from config import Config
 from model_factory import get_default_params, list_model_types
+from model_store import safe_period_label
 
 
 class ForwardBacktestTests(unittest.TestCase):
     def setUp(self):
+        self.date_col = "预测日期"
         self.df = pd.DataFrame(
             {
-                "预测日期": pd.date_range("2024-06-12", "2025-06-30", freq="D"),
+                self.date_col: pd.date_range("2024-06-12", "2025-06-30", freq="D"),
                 "value": 1.0,
             }
         )
@@ -35,47 +36,40 @@ class ForwardBacktestTests(unittest.TestCase):
 
         for month, train_end in expected_train_end.items():
             with self.subTest(month=month):
-                split = split_by_months(self.df, "预测日期", [month])
+                split = split_by_months(self.df, self.date_col, [month])
                 self.assertEqual(split.train_end, train_end)
                 self.assertLess(pd.Timestamp(split.train_end), pd.Timestamp(split.test_start))
 
-    def test_v4_model_alias_is_not_registered(self):
+    def test_v3_v4_model_aliases_are_not_registered(self):
+        self.assertIn("lightgbm_auto", list_model_types())
+        self.assertNotIn("lightgbm_smape_probe_v3", list_model_types())
         self.assertNotIn("lightgbm_smape_probe_v4", list_model_types())
+        with self.assertRaises(ValueError):
+            get_default_params("lightgbm_smape_probe_v3", hour=12)
         with self.assertRaises(ValueError):
             get_default_params("lightgbm_smape_probe_v4", hour=12)
 
-    def test_probe_optimizer_validates_inside_training_window(self):
-        optimizer = LightGBMProbeOptimizer(
-            Config(),
-            "lightgbm_smape_probe_v3",
-            test_months=["2025-04"],
-            max_candidates=1,
-            cv_folds=3,
-            local_alpha_radius=0.1,
-            local_alpha_step=0.02,
-            broad_alpha_step=0.05,
-        )
-        df = pd.DataFrame(
-            {
-                "预测日期": pd.date_range("2025-01-01", "2025-04-30", freq="D"),
-                "月份": 1,
-                "星期": 1,
-                "是否周末": 0,
-                "季度": 1,
-                "target": 100.0,
-            }
-        )
+    def test_model_run_period_label_is_filesystem_safe(self):
+        self.assertEqual(safe_period_label("2025-03"), "2025-03")
+        self.assertEqual(safe_period_label("2025-03,2025-04"), "2025-03__2025-04")
 
-        data = optimizer._prepare_data_from_frame(df, "target", 0, ["direct_time"], "2025-04")
+    def test_monthly_time_series_cv_uses_only_past_months(self):
+        folds = monthly_time_series_folds(self.df[self.date_col], cv_folds=3)
+        months = pd.to_datetime(self.df[self.date_col]).dt.to_period("M")
+        for train_idx, val_idx, validation_month in folds:
+            with self.subTest(validation_month=validation_month):
+                self.assertTrue((months.iloc[train_idx] < pd.Period(validation_month, freq="M")).all())
+                self.assertTrue((months.iloc[val_idx] == pd.Period(validation_month, freq="M")).all())
 
-        self.assertEqual(data["target_month"], "2025-04")
-        self.assertEqual(data["validation_months"], ["2025-02", "2025-03"])
-        self.assertEqual(data["split_info"]["cv_folds"], 2)
-        self.assertEqual(data["split_info"]["folds"][0]["fit_end"], "2025-01-31")
-        self.assertEqual(data["split_info"]["folds"][0]["validation_start"], "2025-02-01")
-        self.assertEqual(data["split_info"]["folds"][1]["fit_end"], "2025-02-28")
-        self.assertEqual(data["split_info"]["folds"][1]["validation_start"], "2025-03-01")
-        self.assertEqual(data["split_info"]["test_start"], "2025-04-01")
+    def test_auto_candidates_gate_midday_and_low_price_structures(self):
+        default_params = {"objective": "regression_l1", "n_estimators": 10, "random_state": 42}
+        high_prices = [100.0] * len(self.df)
+        midday_candidates = generate_auto_candidates(12, default_params, high_prices, cv_folds=None)
+        night_candidates = generate_auto_candidates(2, default_params, high_prices, cv_folds=None)
+
+        self.assertTrue(any("direct_midday_regime" in c.feature_groups for c in midday_candidates))
+        self.assertFalse(any("direct_midday_regime" in c.feature_groups for c in night_candidates))
+        self.assertFalse(any(c.structure == "two_stage_low_price" for c in midday_candidates))
 
 
 if __name__ == "__main__":

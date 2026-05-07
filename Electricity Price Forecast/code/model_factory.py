@@ -1,6 +1,6 @@
-"""
-Lightweight model registry for Direct forecasting.
-"""
+"""Lightweight model registry for Direct forecasting."""
+
+from __future__ import annotations
 
 from typing import Any, Dict, List
 
@@ -8,229 +8,21 @@ import numpy as np
 
 
 LIGHTGBM_DEFAULT_PARAMS: Dict[str, Any] = {
-        "objective": "regression_l1",
-        "n_estimators": 200,
-        "learning_rate": 0.05,
-        "max_depth": 6,
-        "num_leaves": 31,
-        "subsample": 0.8,
-        "colsample_bytree": 0.8,
-        "random_state": 42,
+    "objective": "regression_l1",
+    "n_estimators": 200,
+    "learning_rate": 0.05,
+    "max_depth": 6,
+    "num_leaves": 31,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "random_state": 42,
 }
 
-
-LIGHTGBM_SMAPE_PROBE_PARAMS: Dict[int, Dict[str, Any]] = {
-    0: {"objective": "regression", "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20},
-    1: {"objective": "quantile", "alpha": 0.18, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20},
-    2: {"objective": "quantile", "alpha": 0.45, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
-    3: {"objective": "regression_l1", "n_estimators": 500, "learning_rate": 0.02, "num_leaves": 31, "max_depth": 5, "min_child_samples": 10},
-    4: {"objective": "quantile", "alpha": 0.45, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
-    5: {"objective": "quantile", "alpha": 0.35, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20},
-    6: {"objective": "regression", "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20},
-    7: {"objective": "quantile", "alpha": 0.05, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
-    8: {"objective": "quantile", "alpha": 0.08, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
-    9: {"objective": "quantile", "alpha": 0.18, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
-    10: {"objective": "quantile", "alpha": 0.18, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20},
-    11: {"objective": "quantile", "alpha": 0.8, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20},
-    12: {"objective": "quantile", "alpha": 0.8, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20},
-    13: {"objective": "quantile", "alpha": 0.8, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
-    14: {"objective": "quantile", "alpha": 0.76, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
-    15: {"objective": "quantile", "alpha": 0.45, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
-    16: {"objective": "quantile", "alpha": 0.28, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
-    17: {"objective": "quantile", "alpha": 0.18, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
-    18: {"objective": "quantile", "alpha": 0.25, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20},
-    19: {"objective": "quantile", "alpha": 0.15, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20},
-    20: {"objective": "quantile", "alpha": 0.6, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20},
-    21: {"objective": "quantile", "alpha": 0.05, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20},
-    22: {"objective": "quantile", "alpha": 0.2, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
-    23: {"objective": "quantile", "alpha": 0.08, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
-}
-
-
-LIGHTGBM_SMAPE_PROBE_PARAMS.update(
-    {
-        5: {"objective": "quantile", "alpha": 0.35, "n_estimators": 200, "learning_rate": 0.08, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20},
-        7: {"objective": "quantile", "alpha": 0.05, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20},
-        8: {"objective": "quantile", "alpha": 0.07, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20},
-        9: {"objective": "quantile", "alpha": 0.25, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
-        10: {"objective": "quantile", "alpha": 0.2, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20},
-        11: {"objective": "quantile", "alpha": 0.8, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 30},
-        12: {"objective": "quantile", "alpha": 0.8, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10},
-        13: {"objective": "quantile", "alpha": 0.8, "n_estimators": 500, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 30},
-        14: {"objective": "quantile", "alpha": 0.74, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 15, "max_depth": 6, "min_child_samples": 10},
-        15: {"objective": "regression", "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 5, "min_child_samples": 10},
-        16: {"objective": "quantile", "alpha": 0.28, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 5},
-        22: {"objective": "quantile", "alpha": 0.2, "n_estimators": 120, "learning_rate": 0.03, "num_leaves": 15, "max_depth": 6, "min_child_samples": 10},
-        23: {"objective": "quantile", "alpha": 0.08, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 30},
-    }
-)
-
-
-def _with_common_lgbm_params(hourly_params: Dict[int, Dict[str, Any]]) -> None:
-    for params in hourly_params.values():
-        params.update({"subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42})
-
-
-_with_common_lgbm_params(LIGHTGBM_SMAPE_PROBE_PARAMS)
-
-LIGHTGBM_SMAPE_PROBE_V3_PARAMS: Dict[int, Dict[str, Any]] = {
-    hour: params.copy() for hour, params in LIGHTGBM_SMAPE_PROBE_PARAMS.items()
-}
-
-
-def _ensemble_member(weight: float, feature_groups: List[str], params: Dict[str, Any]) -> Dict[str, Any]:
-    return {"weight": weight, "feature_groups": feature_groups, "params": params}
-
-
-_BASE_GROUPS = ["direct_time", "direct_price_lag", "direct_market_window"]
-_BASE_WEATHER_GROUPS = [*_BASE_GROUPS, "direct_weather_window"]
-_DEFAULT_GROUPS = ["direct_time_midday", "direct_price_lag", "direct_market_window"]
-_WEATHER_GROUPS = [*_DEFAULT_GROUPS, "direct_weather_window"]
-_MIDDAY_GROUPS = [*_DEFAULT_GROUPS, "direct_midday_regime"]
-_MIDDAY_WEATHER_GROUPS = [*_MIDDAY_GROUPS, "direct_midday_weather_agg"]
-
-LIGHTGBM_SMAPE_PROBE_V3_PARAMS.update(
-    {
-        1: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(1.0, _DEFAULT_GROUPS, {"objective": "quantile", "alpha": 0.16, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        2: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(0.67, _DEFAULT_GROUPS, {"objective": "quantile", "alpha": 0.41, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.33, _BASE_GROUPS, {"objective": "quantile", "alpha": 0.51, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        3: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(1.0, _DEFAULT_GROUPS, {"objective": "quantile", "alpha": 0.48, "n_estimators": 500, "learning_rate": 0.02, "num_leaves": 31, "max_depth": 5, "min_child_samples": 10, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        6: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(1.0, _DEFAULT_GROUPS, {"objective": "regression", "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        7: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(0.4558, _DEFAULT_GROUPS, {"objective": "quantile", "alpha": 0.09, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.5442, _BASE_GROUPS, {"objective": "quantile", "alpha": 0.05, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        8: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(0.95, _MIDDAY_WEATHER_GROUPS, {"objective": "quantile", "alpha": 0.35, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20, "sample_weight_mode": "strong", "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.05, _MIDDAY_GROUPS, {"objective": "quantile", "alpha": 0.35, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20, "sample_weight_mode": "default", "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        9: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(0.15, _WEATHER_GROUPS, {"objective": "regression", "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10, "sample_weight_mode": "default", "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.15, _MIDDAY_GROUPS, {"objective": "regression", "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10, "sample_weight_mode": "light", "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.70, _MIDDAY_WEATHER_GROUPS, {"objective": "regression_l1", "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10, "sample_weight_mode": "light", "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        10: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(0.55, _MIDDAY_GROUPS, {"objective": "regression", "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20, "sample_weight_mode": "strong", "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.25, _WEATHER_GROUPS, {"model_kind": "two_stage_low_price", "objective": "quantile", "alpha": 0.8, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10, "low_price_threshold": 50, "prob_threshold": 0.35, "blend": 0.7, "sample_weight_mode": "default", "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.20, _WEATHER_GROUPS, {"model_kind": "two_stage_low_price", "objective": "quantile", "alpha": 0.8, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10, "low_price_threshold": 50, "prob_threshold": 0.5, "blend": 0.7, "sample_weight_mode": "default", "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        11: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(0.55, _MIDDAY_WEATHER_GROUPS, {"objective": "quantile", "alpha": 0.72, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 30, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.25, _MIDDAY_GROUPS, {"objective": "quantile", "alpha": 0.72, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.20, _MIDDAY_WEATHER_GROUPS, {"objective": "quantile", "alpha": 0.72, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        12: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(0.33, _MIDDAY_WEATHER_GROUPS, {"objective": "quantile", "alpha": 0.62, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.33, _WEATHER_GROUPS, {"objective": "quantile", "alpha": 0.6, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10, "sample_weight_mode": "default", "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.34, _WEATHER_GROUPS, {"objective": "quantile", "alpha": 0.9, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 10, "sample_weight_mode": "strong", "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        13: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(0.50, _MIDDAY_GROUPS, {"objective": "quantile", "alpha": 0.76, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.50, _WEATHER_GROUPS, {"objective": "quantile", "alpha": 0.8, "n_estimators": 500, "learning_rate": 0.02, "num_leaves": 31, "max_depth": 5, "min_child_samples": 10, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        14: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(0.55, _WEATHER_GROUPS, {"objective": "regression_l1", "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 15, "max_depth": 6, "min_child_samples": 10, "sample_weight_mode": "light", "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.33, _WEATHER_GROUPS, {"objective": "quantile", "alpha": 0.54, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 15, "max_depth": 6, "min_child_samples": 10, "sample_weight_mode": "strong", "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.12, _DEFAULT_GROUPS, {"objective": "quantile", "alpha": 0.78, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 63, "max_depth": 8, "min_child_samples": 10, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        15: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(0.30, _MIDDAY_WEATHER_GROUPS, {"objective": "regression", "n_estimators": 300, "learning_rate": 0.08, "num_leaves": 31, "max_depth": 5, "min_child_samples": 10, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.70, _MIDDAY_GROUPS, {"objective": "quantile", "alpha": 0.25, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 5, "min_child_samples": 10, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        16: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(0.1667, _DEFAULT_GROUPS, {"objective": "quantile", "alpha": 0.36, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 5, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.6667, _BASE_GROUPS, {"objective": "quantile", "alpha": 0.24, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 5, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.1667, _WEATHER_GROUPS, {"objective": "quantile", "alpha": 0.2, "n_estimators": 300, "learning_rate": 0.03, "num_leaves": 31, "max_depth": 6, "min_child_samples": 5, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        18: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(1.0, _WEATHER_GROUPS, {"objective": "quantile", "alpha": 0.29, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        19: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(1.0, _BASE_WEATHER_GROUPS, {"objective": "quantile", "alpha": 0.15, "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        20: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(0.6024, _DEFAULT_GROUPS, {"objective": "quantile", "alpha": 0.58, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-                _ensemble_member(0.3976, _BASE_WEATHER_GROUPS, {"objective": "regression", "n_estimators": 120, "learning_rate": 0.05, "num_leaves": 15, "max_depth": 4, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-        21: {
-            "model_kind": "feature_ensemble",
-            "members": [
-                _ensemble_member(1.0, _DEFAULT_GROUPS, {"objective": "quantile", "alpha": 0.05, "n_estimators": 200, "learning_rate": 0.05, "num_leaves": 31, "max_depth": 6, "min_child_samples": 20, "subsample": 0.8, "colsample_bytree": 0.8, "random_state": 42}),
-            ],
-        },
-    }
-)
-
-# Promote the validated midday v3 probe as the official sMAPE probe. The
-# lightgbm_smape_probe_v3 name remains available for reproducing the
-# experiment while lightgbm_smape_probe is the production alias.
-LIGHTGBM_SMAPE_PROBE_PARAMS = {
-    hour: params.copy() for hour, params in LIGHTGBM_SMAPE_PROBE_V3_PARAMS.items()
-}
 
 DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
     "lightgbm": LIGHTGBM_DEFAULT_PARAMS,
+    "lightgbm_auto": LIGHTGBM_DEFAULT_PARAMS,
     "lightgbm_smape_probe": LIGHTGBM_DEFAULT_PARAMS,
-    "lightgbm_smape_probe_v3": LIGHTGBM_DEFAULT_PARAMS,
     "xgboost": {
         "n_estimators": 200,
         "learning_rate": 0.05,
@@ -256,22 +48,25 @@ DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
 }
 
 
+LIGHTGBM_PARAM_SPACE: Dict[str, List[Any]] = {
+    "objective": ["regression", "regression_l1", "huber"],
+    "n_estimators": [100, 200, 300, 500],
+    "learning_rate": [0.01, 0.03, 0.05, 0.08, 0.1],
+    "max_depth": [3, 4, 5, 6, 8, 10],
+    "num_leaves": [15, 31, 63, 127],
+    "subsample": [0.7, 0.8, 0.9, 1.0],
+    "colsample_bytree": [0.7, 0.8, 0.9, 1.0],
+    "reg_alpha": [0, 0.1, 0.5, 1.0],
+    "reg_lambda": [0, 0.1, 0.5, 1.0],
+    "min_child_samples": [5, 10, 20, 30],
+    "random_state": [42],
+}
+
+
 PARAM_SPACES: Dict[str, Dict[str, List[Any]]] = {
-    "lightgbm": {
-        "objective": ["regression", "regression_l1", "huber"],
-        "n_estimators": [100, 200, 300, 500],
-        "learning_rate": [0.01, 0.03, 0.05, 0.08, 0.1],
-        "max_depth": [3, 4, 5, 6, 8, 10],
-        "num_leaves": [15, 31, 63, 127],
-        "subsample": [0.7, 0.8, 0.9, 1.0],
-        "colsample_bytree": [0.7, 0.8, 0.9, 1.0],
-        "reg_alpha": [0, 0.1, 0.5, 1.0],
-        "reg_lambda": [0, 0.1, 0.5, 1.0],
-        "min_child_samples": [5, 10, 20, 30],
-        "random_state": [42],
-    },
+    "lightgbm": LIGHTGBM_PARAM_SPACE,
+    "lightgbm_auto": LIGHTGBM_PARAM_SPACE,
     "lightgbm_smape_probe": {},
-    "lightgbm_smape_probe_v3": {},
     "xgboost": {
         "n_estimators": [100, 200, 300, 500],
         "learning_rate": [0.01, 0.03, 0.05, 0.08, 0.1],
@@ -308,10 +103,6 @@ def list_model_types() -> List[str]:
 
 def get_default_params(model_type: str, hour: int | None = None) -> Dict[str, Any]:
     _validate_model_type(model_type)
-    if model_type == "lightgbm_smape_probe" and hour in LIGHTGBM_SMAPE_PROBE_PARAMS:
-        return LIGHTGBM_SMAPE_PROBE_PARAMS[hour].copy()
-    if model_type == "lightgbm_smape_probe_v3" and hour in LIGHTGBM_SMAPE_PROBE_V3_PARAMS:
-        return LIGHTGBM_SMAPE_PROBE_V3_PARAMS[hour].copy()
     return DEFAULT_PARAMS[model_type].copy()
 
 
@@ -322,9 +113,9 @@ def get_param_space(model_type: str) -> Dict[str, List[Any]]:
 
 def create_model(model_type: str, params: Dict[str, Any]):
     _validate_model_type(model_type)
-    params = params.copy()
+    params = _strip_training_metadata(params.copy())
 
-    if model_type in {"lightgbm", "lightgbm_smape_probe", "lightgbm_smape_probe_v3"}:
+    if model_type in {"lightgbm", "lightgbm_auto", "lightgbm_smape_probe"}:
         from lightgbm import LGBMRegressor
 
         if params.get("model_kind") == "feature_ensemble":
@@ -337,6 +128,7 @@ def create_model(model_type: str, params: Dict[str, Any]):
         if sample_weight_mode:
             return WeightedLGBMRegressor(params, sample_weight_mode)
 
+        params.pop("model_kind", None)
         return LGBMRegressor(verbose=-1, **params)
 
     if model_type == "xgboost":
@@ -368,6 +160,13 @@ def _validate_model_type(model_type: str) -> None:
         raise ValueError(f"不支持的模型类型: {model_type}. 可选: {supported}")
 
 
+def _strip_training_metadata(params: Dict[str, Any]) -> Dict[str, Any]:
+    params.pop("feature_groups", None)
+    params.pop("candidate_name", None)
+    params.pop("selected_structure", None)
+    return params
+
+
 def _smape_proxy_weights(y: np.ndarray, mode: str) -> np.ndarray:
     y = np.asarray(y, dtype=float)
     base = 300.0 / (np.abs(y) + 30.0)
@@ -386,7 +185,7 @@ class WeightedLGBMRegressor:
     def __init__(self, params: Dict[str, Any], sample_weight_mode: str):
         from lightgbm import LGBMRegressor
 
-        self.params = params.copy()
+        self.params = _strip_training_metadata(params.copy())
         self.sample_weight_mode = sample_weight_mode
         self.model = LGBMRegressor(verbose=-1, **self.params)
 
@@ -399,7 +198,7 @@ class WeightedLGBMRegressor:
 
 
 def _create_lgbm_from_params(params: Dict[str, Any]):
-    params = params.copy()
+    params = _strip_training_metadata(params.copy())
     if params.get("model_kind") == "two_stage_low_price":
         return LowPriceTwoStageRegressor(params)
 
@@ -407,6 +206,7 @@ def _create_lgbm_from_params(params: Dict[str, Any]):
     if sample_weight_mode:
         return WeightedLGBMRegressor(params, sample_weight_mode)
 
+    params.pop("model_kind", None)
     from lightgbm import LGBMRegressor
 
     return LGBMRegressor(verbose=-1, **params)
@@ -418,6 +218,7 @@ class FeatureGroupEnsembleRegressor:
     def __init__(self, params: Dict[str, Any]):
         config = params.copy()
         config.pop("model_kind", None)
+        config.pop("feature_groups", None)
         self.members = config.pop("members")
         self.fitted_members_ = []
 
@@ -459,7 +260,7 @@ class LowPriceTwoStageRegressor:
     def __init__(self, params: Dict[str, Any]):
         from lightgbm import LGBMClassifier, LGBMRegressor
 
-        config = params.copy()
+        config = _strip_training_metadata(params.copy())
         config.pop("model_kind", None)
         self.low_price_threshold = float(config.pop("low_price_threshold", 80.0))
         self.prob_threshold = float(config.pop("prob_threshold", 0.5))
@@ -498,7 +299,11 @@ class LowPriceTwoStageRegressor:
 
         if int(low_mask.sum()) >= 4:
             low_weight = _smape_proxy_weights(y_arr[low_mask], self.low_sample_weight_mode)
-            self.low_model.fit(X.loc[low_mask] if hasattr(X, "loc") else X[low_mask], y_arr[low_mask], sample_weight=low_weight)
+            self.low_model.fit(
+                X.loc[low_mask] if hasattr(X, "loc") else X[low_mask],
+                y_arr[low_mask],
+                sample_weight=low_weight,
+            )
             self.has_low_model_ = True
         else:
             self.has_low_model_ = False

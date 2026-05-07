@@ -21,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from config import Config
 from feature_engineering_direct import DirectFeatureEngineer
 from feature_selector import FeatureSelector
+from model_store import resolve_model_dir
 from model_factory import list_model_types
 
 
@@ -30,10 +31,11 @@ logger = logging.getLogger(__name__)
 class DirectPredictor:
     """Load 24 hourly models and predict one target date."""
 
-    def __init__(self, config: Config, model_type: str):
+    def __init__(self, config: Config, model_type: str, test_months: Optional[List[str]] = None):
         self.config = config
         self.model_type = model_type
-        self.model_dir = config.get_model_path("direct") / model_type
+        self.test_months = test_months
+        self.model_dir = resolve_model_dir(config, model_type, test_months)
         self.feature_selector = FeatureSelector()
 
     def predict(self, target_date: Optional[str] = None) -> Dict[str, Any]:
@@ -50,6 +52,7 @@ class DirectPredictor:
         result = {
             "status": "success",
             "model_type": self.model_type,
+            "model_dir": str(self.model_dir),
             "target_date": target_date,
             "feature_date_used": str(used_date.date()) if hasattr(used_date, "date") else str(used_date),
             "prediction_time": datetime.now().isoformat(timespec="seconds"),
@@ -123,7 +126,8 @@ class DirectPredictor:
         return calibrated
 
     def _save_prediction(self, result: Dict[str, Any]) -> None:
-        pred_dir = self.config.get_result_path("predictions") / "direct" / self.model_type
+        run_label = self.model_dir.name if self.model_dir.parent.name == self.model_type else "legacy"
+        pred_dir = self.config.get_result_path("predictions") / "direct" / self.model_type / run_label
         pred_dir.mkdir(parents=True, exist_ok=True)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -157,13 +161,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Direct 多步模型预测")
     parser.add_argument("--model", default="lightgbm", choices=list_model_types(), help="基模型类型")
     parser.add_argument("--date", default=None, help="预测目标日期 YYYY-MM-DD")
+    parser.add_argument("--test-months", nargs="+", default=None, help="选择用哪个测试月份训练出的模型；默认使用最新训练版本")
     return parser.parse_args()
 
 
 def main() -> None:
     setup_logging()
     args = parse_args()
-    result = DirectPredictor(Config(), args.model).predict(args.date)
+    result = DirectPredictor(Config(), args.model, test_months=args.test_months).predict(args.date)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

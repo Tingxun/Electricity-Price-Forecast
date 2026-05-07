@@ -21,6 +21,7 @@ from config import Config
 from data_split import split_by_months
 from feature_engineering_direct import DirectFeatureEngineer
 from feature_selector import FeatureSelector
+from model_store import resolve_model_dir, safe_period_label
 from model_factory import list_model_types
 from utils.metrics import calculate_mae, calculate_rmse, calculate_smape, calculate_accuracy_rate, calculate_sape
 
@@ -35,7 +36,7 @@ class DirectEvaluator:
         self.config = config
         self.model_type = model_type
         self.test_months = test_months
-        self.model_dir = config.get_model_path("direct") / model_type
+        self.model_dir = resolve_model_dir(config, model_type, test_months)
         self.feature_selector = FeatureSelector()
 
     def evaluate(self, hours: Optional[List[int]] = None) -> pd.DataFrame:
@@ -151,8 +152,9 @@ class DirectEvaluator:
         dates: pd.Series,
         overall_acc_rate: float,
     ) -> None:
-        log_dir = self.config.get_result_path("logs") / "direct" / self.model_type
-        pred_dir = self.config.get_result_path("predictions") / "direct" / self.model_type
+        period_label = safe_period_label(str(results_df["test_period"].iloc[0]))
+        log_dir = self.config.get_result_path("logs") / "direct" / self.model_type / period_label
+        pred_dir = self.config.get_result_path("predictions") / "direct" / self.model_type / period_label
         log_dir.mkdir(parents=True, exist_ok=True)
         pred_dir.mkdir(parents=True, exist_ok=True)
 
@@ -167,6 +169,7 @@ class DirectEvaluator:
 
         summary = {
             "model_type": self.model_type,
+            "model_dir": str(self.model_dir),
             "test_period": str(results_df["test_period"].iloc[0]),
             "overall_mae": float(results_df["mae"].mean()),
             "overall_rmse": float(results_df["rmse"].mean()),
@@ -202,13 +205,14 @@ def main() -> None:
     setup_logging()
     args = parse_args()
     evaluator = DirectEvaluator(Config(), args.model, test_months=args.test_months)
-    results = evaluator.evaluate(args.hours)
+    results, overall_acc_rate = evaluator.evaluate(args.hours)
     print(results.to_string(index=False))
     print(
         f"\nAverage MAE={results['mae'].mean():.4f}, "
         f"RMSE={results['rmse'].mean():.4f}, "
         f"sMAPE={results['smape'].mean():.2f}%, "
-        f"AccRate={results['acc_rate'].mean():.2f}%"
+        f"AccRate={results['acc_rate'].mean():.2f}%, "
+        f"OverallAccRate={overall_acc_rate:.2f}%"
     )
 
 
