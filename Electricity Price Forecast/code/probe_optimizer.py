@@ -99,6 +99,7 @@ class LightGBMProbeOptimizer:
         model_type: str,
         test_months: Optional[List[str]],
         max_candidates: int,
+        cv_folds: int,
         local_alpha_radius: float,
         local_alpha_step: float,
         broad_alpha_step: float,
@@ -110,6 +111,7 @@ class LightGBMProbeOptimizer:
         self.model_type = model_type
         self.test_months = test_months
         self.max_candidates = max_candidates
+        self.cv_folds = max(1, cv_folds)
         self.local_alpha_radius = local_alpha_radius
         self.local_alpha_step = local_alpha_step
         self.broad_alpha_step = broad_alpha_step
@@ -170,8 +172,14 @@ class LightGBMProbeOptimizer:
                     "feature_variant": feature_variant,
                     "feature_count": len(next(iter(data_by_month.values()))["feature_cols"]),
                     "test_period": ",".join(data_by_month.keys()),
-                    "n_train": int(np.mean([data["split_info"]["n_train"] for data in data_by_month.values()])),
-                    "n_test": int(np.sum([data["split_info"]["n_test"] for data in data_by_month.values()])),
+                    "target_period": ",".join(data_by_month.keys()),
+                    "validation_period": ",".join(
+                        sorted({month for data in data_by_month.values() for month in data["validation_months"]})
+                    ),
+                    "n_train": int(np.mean([fold["n_fit"] for data in data_by_month.values() for fold in data["folds"]])),
+                    "n_validation": int(np.sum([data["split_info"]["n_validation"] for data in data_by_month.values()])),
+                    "n_target_test": int(np.sum([data["split_info"]["n_target_test"] for data in data_by_month.values()])),
+                    "n_cv_folds": int(np.sum([len(data["folds"]) for data in data_by_month.values()])),
                     "params": json.dumps(params, ensure_ascii=False, sort_keys=True),
                     "is_default_params": idx == 1,
                 }
@@ -222,30 +230,88 @@ class LightGBMProbeOptimizer:
         numeric_features = features_df[candidate_features].select_dtypes(include=[np.number]).columns.tolist()
         feature_cols = self.feature_selector.select_features_from_groups(list(feature_groups), numeric_features)
         split = split_by_months(features_df, "预测日期", [test_month])
+        dates = pd.to_datetime(features_df["预测日期"])
+        months = dates.dt.to_period("M")
+        train_months = months[split.train_mask]
+        validation_months = sorted(train_months.unique())[1:][-self.cv_folds :]
+        if not validation_months:
+            raise ValueError(f"目标月份 {test_month} 的训练窗口内没有可用的时间序列交叉验证月份")
+
+        folds = []
+        for validation_month in validation_months:
+            fit_mask = split.train_mask & (months < validation_month)
+            validation_mask = split.train_mask & (months == validation_month)
+            if not fit_mask.any() or not validation_mask.any():
+                continue
+            folds.append(
+                {
+                    "validation_month": str(validation_month),
+                    "X_fit": features_df.loc[fit_mask, feature_cols].reset_index(drop=True),
+                    "y_fit": features_df.loc[fit_mask, target_col].to_numpy(),
+                    "X_validation": features_df.loc[validation_mask, feature_cols].reset_index(drop=True),
+                    "y_validation": features_df.loc[validation_mask, target_col].to_numpy(),
+                    "fit_start": dates[fit_mask].min().strftime("%Y-%m-%d"),
+                    "fit_end": dates[fit_mask].max().strftime("%Y-%m-%d"),
+                    "validation_start": dates[validation_mask].min().strftime("%Y-%m-%d"),
+                    "validation_end": dates[validation_mask].max().strftime("%Y-%m-%d"),
+                    "n_fit": int(fit_mask.sum()),
+                    "n_validation": int(validation_mask.sum()),
+                }
+            )
+
+        if not folds:
+            raise ValueError(f"目标月份 {test_month} 的训练窗口内没有有效的时间序列交叉验证 fold")
 
         return {
-            "X_train": features_df.loc[split.train_mask, feature_cols].reset_index(drop=True),
-            "y_train": features_df.loc[split.train_mask, target_col].to_numpy(),
-            "X_test": features_df.loc[split.test_mask, feature_cols].reset_index(drop=True),
-            "y_test": features_df.loc[split.test_mask, target_col].to_numpy(),
+            "folds": folds,
             "feature_cols": feature_cols,
-            "split_info": split.to_dict(),
+            "target_month": str(test_month),
+            "validation_months": [fold["validation_month"] for fold in folds],
+            "split_info": {
+                **split.to_dict(),
+                "target_month": str(test_month),
+                "validation_months": [fold["validation_month"] for fold in folds],
+                "cv_folds": len(folds),
+                "folds": [
+                    {
+                        key: fold[key]
+                        for key in [
+                            "validation_month",
+                            "fit_start",
+                            "fit_end",
+                            "validation_start",
+                            "validation_end",
+                            "n_fit",
+                            "n_validation",
+                        ]
+                    }
+                    for fold in folds
+                ],
+                "n_fit": int(np.mean([fold["n_fit"] for fold in folds])),
+                "n_validation": int(np.sum([fold["n_validation"] for fold in folds])),
+                "n_target_test": int(split.test_mask.sum()),
+            },
         }
 
     def _evaluate_candidate_by_month(self, params: Dict[str, Any], data_by_month: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
         monthly_metrics: Dict[str, Dict[str, float]] = {}
         for month, data in data_by_month.items():
-            model = create_model(self.model_type, params)
-            model.fit(data["X_train"], data["y_train"])
-            pred = model.predict(data["X_test"])
-            monthly_metrics[month] = {
-                "mae": calculate_mae(data["y_test"], pred),
-                "rmse": calculate_rmse(data["y_test"], pred),
-                "smape": calculate_smape(data["y_test"], pred),
-                "acc_rate": calculate_accuracy_rate(data["y_test"], pred, threshold=20.0),
-                "n_train": float(data["split_info"]["n_train"]),
-                "n_test": float(data["split_info"]["n_test"]),
-            }
+            for fold in data["folds"]:
+                model = create_model(self.model_type, params)
+                model.fit(fold["X_fit"], fold["y_fit"])
+                pred = model.predict(fold["X_validation"])
+                key = f"{month}|valid={fold['validation_month']}"
+                monthly_metrics[key] = {
+                    "target_month": data["target_month"],
+                    "validation_month": fold["validation_month"],
+                    "mae": calculate_mae(fold["y_validation"], pred),
+                    "rmse": calculate_rmse(fold["y_validation"], pred),
+                    "smape": calculate_smape(fold["y_validation"], pred),
+                    "acc_rate": calculate_accuracy_rate(fold["y_validation"], pred, threshold=20.0),
+                    "n_fit": float(fold["n_fit"]),
+                    "n_validation": float(fold["n_validation"]),
+                    "n_target_test": float(data["split_info"]["n_target_test"]),
+                }
         return monthly_metrics
 
     @staticmethod
@@ -255,23 +321,6 @@ class LightGBMProbeOptimizer:
         instability_penalty = max(0.0, float(np.max(smapes_arr) - np.mean(smapes_arr))) * 0.25
         acc_bonus = float(np.mean(acc_arr)) * 0.02
         return float(np.mean(smapes_arr) + instability_penalty - acc_bonus)
-
-    def _prepare_data(self, hour: int, feature_groups: Sequence[str]) -> Dict[str, Any]:
-        feature_groups = self._feature_groups_for_model(feature_groups)
-        features_df, target_col = self.engineer.load_features(hour)
-        candidate_features = [col for col in features_df.columns if col not in [target_col, "预测日期"]]
-        numeric_features = features_df[candidate_features].select_dtypes(include=[np.number]).columns.tolist()
-        feature_cols = self.feature_selector.select_features_from_groups(list(feature_groups), numeric_features)
-        split = split_by_months(features_df, "预测日期", self.test_months)
-
-        return {
-            "X_train": features_df.loc[split.train_mask, feature_cols].reset_index(drop=True),
-            "y_train": features_df.loc[split.train_mask, target_col].to_numpy(),
-            "X_test": features_df.loc[split.test_mask, feature_cols].reset_index(drop=True),
-            "y_test": features_df.loc[split.test_mask, target_col].to_numpy(),
-            "feature_cols": feature_cols,
-            "split_info": split.to_dict(),
-        }
 
     def _build_candidates(self, base_params: Dict[str, Any], broad_search: bool) -> List[Dict[str, Any]]:
         candidates: List[Dict[str, Any]] = [self._normalize_params(base_params)]
@@ -452,6 +501,7 @@ class LightGBMProbeOptimizer:
             raise RuntimeError("No successful optimization rows to save")
 
         test_period = str(success_df["test_period"].iloc[0])
+        validation_period = str(success_df["validation_period"].iloc[0]) if "validation_period" in success_df.columns else ""
         safe_period = test_period.replace(",", "_")
         hour_suffix = ""
         if sorted(requested_hours) != list(range(24)):
@@ -466,7 +516,7 @@ class LightGBMProbeOptimizer:
         best_df = success_df.sort_values(["hour", score_col, "smape"]).groupby("hour", as_index=False).head(1)
         default_df = success_df[success_df["is_default_params"] & (success_df["feature_variant"] == "default")]
 
-        summary = self._build_summary(best_df, default_df, requested_hours, test_period)
+        summary = self._build_summary(best_df, default_df, requested_hours, test_period, validation_period)
         summary_path = log_dir / f"probe_optimization_summary{hour_suffix}.json"
         with open(summary_path, "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
@@ -483,6 +533,7 @@ class LightGBMProbeOptimizer:
         default_df: pd.DataFrame,
         requested_hours: List[int],
         test_period: str,
+        validation_period: str,
     ) -> Dict[str, Any]:
         baseline_smape = float(default_df["smape"].mean())
         best_smape = float(best_df["smape"].mean())
@@ -528,6 +579,8 @@ class LightGBMProbeOptimizer:
         return {
             "model_type": self.model_type,
             "test_period": test_period,
+            "target_period": test_period,
+            "validation_period": validation_period,
             "hours": requested_hours,
             "baseline_smape": baseline_smape,
             "best_smape": best_smape,
@@ -573,11 +626,12 @@ def setup_logging() -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Optimize LightGBM sMAPE probe parameters on monthly holdout")
+    parser = argparse.ArgumentParser(description="Optimize LightGBM sMAPE probe parameters on pre-target training validation")
     parser.add_argument("--model", default="lightgbm_smape_probe_v3", choices=list_model_types())
     parser.add_argument("--hours", type=int, nargs="+", default=None)
     parser.add_argument("--test-months", nargs="+", default=None)
     parser.add_argument("--max-candidates", type=int, default=80)
+    parser.add_argument("--cv-folds", type=int, default=3)
     parser.add_argument("--local-alpha-radius", type=float, default=0.10)
     parser.add_argument("--local-alpha-step", type=float, default=0.02)
     parser.add_argument("--broad-alpha-step", type=float, default=0.05)
@@ -592,6 +646,7 @@ def main() -> None:
         model_type=args.model,
         test_months=args.test_months,
         max_candidates=args.max_candidates,
+        cv_folds=args.cv_folds,
         local_alpha_radius=args.local_alpha_radius,
         local_alpha_step=args.local_alpha_step,
         broad_alpha_step=args.broad_alpha_step,

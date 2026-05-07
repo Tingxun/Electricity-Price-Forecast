@@ -227,40 +227,10 @@ LIGHTGBM_SMAPE_PROBE_PARAMS = {
     hour: params.copy() for hour, params in LIGHTGBM_SMAPE_PROBE_V3_PARAMS.items()
 }
 
-def _v4_feature_groups(groups: List[str]) -> List[str]:
-    replacements = {
-        "direct_time": "direct_time_v4",
-        "direct_time_midday": "direct_time_midday_v4",
-        "direct_price_lag": "direct_price_lag_v4",
-        "direct_midday_regime": "direct_midday_regime_v4",
-    }
-    return [replacements.get(group, group) for group in groups]
-
-
-def _v4_params(params: Dict[str, Any]) -> Dict[str, Any]:
-    copied = params.copy()
-    if copied.get("model_kind") == "feature_ensemble":
-        copied["members"] = [
-            {
-                **member,
-                "feature_groups": _v4_feature_groups(member.get("feature_groups", [])),
-                "params": member["params"].copy(),
-            }
-            for member in copied.get("members", [])
-        ]
-    return copied
-
-
-LIGHTGBM_SMAPE_PROBE_V4_PARAMS: Dict[int, Dict[str, Any]] = {
-    hour: _v4_params(params) for hour, params in LIGHTGBM_SMAPE_PROBE_V3_PARAMS.items()
-}
-
-
 DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
     "lightgbm": LIGHTGBM_DEFAULT_PARAMS,
     "lightgbm_smape_probe": LIGHTGBM_DEFAULT_PARAMS,
     "lightgbm_smape_probe_v3": LIGHTGBM_DEFAULT_PARAMS,
-    "lightgbm_smape_probe_v4": LIGHTGBM_DEFAULT_PARAMS,
     "xgboost": {
         "n_estimators": 200,
         "learning_rate": 0.05,
@@ -302,7 +272,6 @@ PARAM_SPACES: Dict[str, Dict[str, List[Any]]] = {
     },
     "lightgbm_smape_probe": {},
     "lightgbm_smape_probe_v3": {},
-    "lightgbm_smape_probe_v4": {},
     "xgboost": {
         "n_estimators": [100, 200, 300, 500],
         "learning_rate": [0.01, 0.03, 0.05, 0.08, 0.1],
@@ -343,8 +312,6 @@ def get_default_params(model_type: str, hour: int | None = None) -> Dict[str, An
         return LIGHTGBM_SMAPE_PROBE_PARAMS[hour].copy()
     if model_type == "lightgbm_smape_probe_v3" and hour in LIGHTGBM_SMAPE_PROBE_V3_PARAMS:
         return LIGHTGBM_SMAPE_PROBE_V3_PARAMS[hour].copy()
-    if model_type == "lightgbm_smape_probe_v4" and hour in LIGHTGBM_SMAPE_PROBE_V4_PARAMS:
-        return LIGHTGBM_SMAPE_PROBE_V4_PARAMS[hour].copy()
     return DEFAULT_PARAMS[model_type].copy()
 
 
@@ -357,7 +324,7 @@ def create_model(model_type: str, params: Dict[str, Any]):
     _validate_model_type(model_type)
     params = params.copy()
 
-    if model_type in {"lightgbm", "lightgbm_smape_probe", "lightgbm_smape_probe_v3", "lightgbm_smape_probe_v4"}:
+    if model_type in {"lightgbm", "lightgbm_smape_probe", "lightgbm_smape_probe_v3"}:
         from lightgbm import LGBMRegressor
 
         if params.get("model_kind") == "feature_ensemble":

@@ -93,10 +93,9 @@ class DirectMonthlyBacktester:
         data = self._prepare_data(hour, test_month)
         best_params, cv_smape = self._search_best_params(data["X_train"], data["y_train"], hour, 42 + hour)
 
-        calibration = self._fit_pretest_calibration(best_params, data) if self.model_type.endswith("_v4") else self._default_calibration()
         model = create_model(self.model_type, best_params)
         model.fit(data["X_train"], data["y_train"])
-        y_pred = self._apply_calibration(model.predict(data["X_test"]), calibration)
+        y_pred = model.predict(data["X_test"])
         sape = calculate_sape(data["y_test"], y_pred)
 
         for date, actual, pred, sape_value in zip(data["test_dates"], data["y_test"], y_pred, sape):
@@ -133,7 +132,6 @@ class DirectMonthlyBacktester:
             "acc_rate": calculate_accuracy_rate(data["y_test"], y_pred, threshold=20.0),
             "training_time": time.time() - start,
             "best_params": json.dumps(best_params, ensure_ascii=False),
-            "calibration": json.dumps(calibration, ensure_ascii=False),
         }
 
     def _prepare_data(self, hour: int, test_month: str) -> Dict[str, Any]:
@@ -165,74 +163,6 @@ class DirectMonthlyBacktester:
             "test_dates": test_dates,
             "split_info": split.to_dict(),
         }
-
-    def _fit_pretest_calibration(self, params: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, float]:
-        """Fit a simple per-hour calibration on the last training month only."""
-        train_dates = pd.to_datetime(data["train_dates"])
-        train_months = train_dates.dt.to_period("M")
-        validation_month = train_months.max()
-        fit_mask = train_months < validation_month
-        val_mask = train_months == validation_month
-
-        if int(fit_mask.sum()) < 30 or int(val_mask.sum()) < 7:
-            return self._default_calibration()
-
-        try:
-            model = create_model(self.model_type, params)
-            model.fit(data["X_train"].loc[fit_mask].reset_index(drop=True), data["y_train"][fit_mask.to_numpy()])
-            val_pred = model.predict(data["X_train"].loc[val_mask].reset_index(drop=True))
-            calibration = self._search_calibration(data["y_train"][val_mask.to_numpy()], val_pred)
-            calibration["validation_month"] = str(validation_month)
-            return calibration
-        except Exception as exc:
-            logger.warning("校准失败，回退默认校准: %s", exc)
-            return self._default_calibration()
-
-    @staticmethod
-    def _default_calibration() -> Dict[str, float]:
-        return {"scale": 1.0, "bias": 0.0, "clip_min": None, "validation_smape": None, "validation_acc_rate": None}
-
-    @staticmethod
-    def _search_calibration(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
-        y_true = np.asarray(y_true, dtype=float)
-        y_pred = np.asarray(y_pred, dtype=float)
-        best = {
-            "scale": 1.0,
-            "bias": 0.0,
-            "clip_min": None,
-            "validation_smape": calculate_smape(y_true, y_pred),
-            "validation_acc_rate": calculate_accuracy_rate(y_true, y_pred, threshold=20.0),
-        }
-        best_score = best["validation_smape"] - 0.02 * best["validation_acc_rate"]
-
-        for scale in np.round(np.arange(0.55, 1.31, 0.05), 2):
-            for bias in np.arange(-120.0, 81.0, 10.0):
-                for clip_min in [None, 0.0]:
-                    calibrated = y_pred * scale + bias
-                    if clip_min is not None:
-                        calibrated = np.maximum(calibrated, clip_min)
-                    smape = calculate_smape(y_true, calibrated)
-                    acc_rate = calculate_accuracy_rate(y_true, calibrated, threshold=20.0)
-                    score = smape - 0.02 * acc_rate
-                    if score < best_score:
-                        best_score = score
-                        best = {
-                            "scale": float(scale),
-                            "bias": float(bias),
-                            "clip_min": clip_min,
-                            "validation_smape": float(smape),
-                            "validation_acc_rate": float(acc_rate),
-                        }
-        return best
-
-    @staticmethod
-    def _apply_calibration(y_pred: np.ndarray, calibration: Dict[str, Any]) -> np.ndarray:
-        calibrated = np.asarray(y_pred, dtype=float) * float(calibration.get("scale", 1.0))
-        calibrated = calibrated + float(calibration.get("bias", 0.0))
-        clip_min = calibration.get("clip_min")
-        if clip_min is not None:
-            calibrated = np.maximum(calibrated, float(clip_min))
-        return calibrated
 
     @staticmethod
     def _price_bucket(value: float) -> str:

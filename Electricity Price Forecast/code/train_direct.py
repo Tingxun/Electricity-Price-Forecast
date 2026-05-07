@@ -108,11 +108,10 @@ class DirectTrainer:
             random_state=42 + hour,
         )
 
-        calibration = self._fit_pretest_calibration(best_params, data) if self.model_type.endswith("_v4") else {"scale": 1.0, "bias": 0.0, "clip_min": None}
         model = create_model(self.model_type, best_params)
         model.fit(data["X_train"], data["y_train"])
 
-        y_pred = self._apply_calibration(model.predict(data["X_test"]), calibration)
+        y_pred = model.predict(data["X_test"])
         test_mae = calculate_mae(data["y_test"], y_pred)
         test_rmse = calculate_rmse(data["y_test"], y_pred)
         test_smape = calculate_smape(data["y_test"], y_pred)
@@ -137,7 +136,6 @@ class DirectTrainer:
             "target_col": data["target_col"],
             "feature_cols": data["feature_cols"],
             "best_params": best_params,
-            "calibration": calibration,
             "split_info": data["split_info"],
             "best_cv_smape": best_cv_smape,
             "test_mae": test_mae,
@@ -406,75 +404,6 @@ class DirectTrainer:
             pred = model.predict(X.iloc[val_idx])
             scores.append(calculate_smape(y[val_idx], pred))
         return float(np.mean(scores))
-
-    @staticmethod
-    def _split_calibration_data(
-        X: pd.DataFrame,
-        y: np.ndarray,
-        calibration_ratio: float = 0.2,
-    ) -> Tuple[pd.DataFrame, np.ndarray, pd.DataFrame, np.ndarray]:
-        split_idx = max(1, int(len(X) * (1 - calibration_ratio)))
-        if split_idx >= len(X):
-            split_idx = len(X) - 1
-        return X.iloc[:split_idx], y[:split_idx], X.iloc[split_idx:], y[split_idx:]
-
-    def _fit_smape_calibration(self, y_pred: np.ndarray, y_true: np.ndarray) -> Dict[str, float]:
-        """Fit a simple affine calibration on validation predictions."""
-        y_pred = np.asarray(y_pred, dtype=float).reshape(-1)
-        y_true = np.asarray(y_true, dtype=float).reshape(-1)
-
-        scale_grid = np.round(np.arange(0.45, 1.26, 0.05), 2)
-        bias_grid = np.arange(-80.0, 61.0, 10.0)
-        best = {
-            "scale": 1.0,
-            "bias": 0.0,
-            "clip_min": 0.0,
-            "validation_smape": calculate_smape(y_true, np.maximum(y_pred, 0.0)),
-        }
-
-        for scale in scale_grid:
-            for bias in bias_grid:
-                calibrated = np.maximum(y_pred * scale + bias, 0.0)
-                score = calculate_smape(y_true, calibrated)
-                if score < best["validation_smape"]:
-                    best = {
-                        "scale": float(scale),
-                        "bias": float(bias),
-                        "clip_min": 0.0,
-                        "validation_smape": float(score),
-                    }
-
-        return best
-
-    def _fit_pretest_calibration(self, params: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, float]:
-        train_dates = pd.to_datetime(data["train_dates"])
-        train_months = train_dates.dt.to_period("M")
-        validation_month = train_months.max()
-        fit_mask = train_months < validation_month
-        val_mask = train_months == validation_month
-
-        if int(fit_mask.sum()) < 30 or int(val_mask.sum()) < 7:
-            return {"scale": 1.0, "bias": 0.0, "clip_min": None}
-
-        try:
-            model = create_model(self.model_type, params)
-            model.fit(data["X_train"].loc[fit_mask].reset_index(drop=True), data["y_train"][fit_mask.to_numpy()])
-            val_pred = model.predict(data["X_train"].loc[val_mask].reset_index(drop=True))
-            calibration = self._fit_smape_calibration(val_pred, data["y_train"][val_mask.to_numpy()])
-            calibration["validation_month"] = str(validation_month)
-            return calibration
-        except Exception as exc:
-            logger.warning("H%02d 校准失败，回退默认校准: %s", data.get("hour", -1), exc)
-            return {"scale": 1.0, "bias": 0.0, "clip_min": None}
-
-    @staticmethod
-    def _apply_calibration(y_pred: np.ndarray, calibration: Dict[str, float]) -> np.ndarray:
-        calibrated = np.asarray(y_pred, dtype=float) * calibration.get("scale", 1.0)
-        calibrated = calibrated + calibration.get("bias", 0.0)
-        clip_min = calibration.get("clip_min", None)
-        if clip_min is not None:
-            calibrated = np.maximum(calibrated, clip_min)
-        return calibrated
 
     @staticmethod
     def _time_series_folds(n_samples: int, cv_folds: int) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
