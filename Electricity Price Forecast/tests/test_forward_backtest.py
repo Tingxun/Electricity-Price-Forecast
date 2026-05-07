@@ -10,10 +10,10 @@ CODE_DIR = PROJECT_ROOT / "code"
 if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
 
-from auto_model_selection import generate_auto_candidates, monthly_time_series_folds
-from data_split import split_by_months
+from utils.auto_model_selection import generate_auto_candidates, monthly_time_series_folds
+from utils.data_split import split_by_months
 from model_factory import get_default_params, list_model_types
-from model_store import safe_period_label
+from utils.model_store import safe_period_label
 
 
 class ForwardBacktestTests(unittest.TestCase):

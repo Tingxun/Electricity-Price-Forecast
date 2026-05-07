@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from config import Config
 from feature_engineering_direct import DirectFeatureEngineer
 from feature_selector import FeatureSelector
-from model_store import resolve_model_dir
+from utils.model_store import resolve_model_dir
 from model_factory import list_model_types
 
 

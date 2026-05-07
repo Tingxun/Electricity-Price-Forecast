@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config import Config
 from model_factory import list_model_types
-from strategy_registry import all_strategy_names, ensure_implemented, list_strategies
+from utils.strategy_registry import all_strategy_names, ensure_implemented, list_strategies
 
 
 logger = logging.getLogger(__name__)

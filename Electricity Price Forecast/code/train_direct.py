@@ -25,11 +25,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from config import Config
-from auto_model_selection import AutoCandidate, generate_auto_candidates, monthly_time_series_folds
-from data_split import split_by_months
+from utils.auto_model_selection import AutoCandidate, generate_auto_candidates, monthly_time_series_folds
+from utils.data_split import split_by_months
 from feature_engineering_direct import DirectFeatureEngineer
 from feature_selector import FeatureSelector
-from model_store import model_run_dir
+from utils.model_store import model_run_dir
 from model_factory import create_model, get_default_params, get_param_space, list_model_types
 from utils.metrics import calculate_mae, calculate_rmse, calculate_smape, calculate_accuracy_rate
 

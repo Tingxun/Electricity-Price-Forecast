@@ -20,7 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from config import Config
-from data_split import list_rolling_months, split_by_months
+from utils.data_split import list_rolling_months, split_by_months
 from feature_engineering_direct import DirectFeatureEngineer
 from feature_selector import FeatureSelector
 from model_factory import create_model, get_default_params, get_param_space, list_model_types
