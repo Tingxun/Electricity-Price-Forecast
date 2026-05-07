@@ -144,6 +144,7 @@ class DirectTrainer:
 
         model = create_model(self.model_type, best_params)
         model.fit(data["X_train"], data["y_train"])
+        logger.info("H%02d 最终选中特征数: %s", hour, len(data["feature_cols"]))
 
         y_pred = model.predict(data["X_test"])
         test_mae = calculate_mae(data["y_test"], y_pred)
@@ -526,78 +527,6 @@ class DirectTrainer:
             )
         return metrics
 
-    def _search_best_params(
-        self,
-        X_train: pd.DataFrame,
-        y_train: np.ndarray,
-        hour: int,
-        random_state: int,
-        dates: Optional[pd.Series] = None,
-        base_params: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[Dict[str, Any], float, List[Dict[str, Any]]]:
-        default_params = (base_params or get_default_params(self.model_type, hour=hour)).copy()
-        param_space = get_param_space(self.model_type)
-        try:
-            folds = monthly_time_series_folds(dates, self.cv_folds) if dates is not None else None
-        except ValueError as exc:
-            logger.warning("按月时间序列 CV 不可用，回退到样本顺序 CV: %s", exc)
-            folds = None
-
-        if self.n_iter <= 0 or not param_space:
-            score = self._cross_val_smape(default_params, X_train, y_train, folds=folds)
-            return default_params, score, [{"params": default_params, "cv_smape": score, "rank": 1}]
-
-        sampler = ParameterSampler(param_space, n_iter=self.n_iter, random_state=random_state)
-        best_params = default_params
-        best_score = float("inf")
-
-        for i, params in enumerate(sampler, start=1):
-            try:
-                score = self._cross_val_smape(params, X_train, y_train)
-            except Exception as exc:
-                logger.warning("参数组合 %s 失败: %s", i, exc)
-                continue
-
-            if score < best_score:
-                best_score = score
-                best_params = dict(params)
-                logger.info("  新最优 [%s/%s]: CV_sMAPE=%.4f", i, self.n_iter, score)
-
-        if not np.isfinite(best_score):
-            best_score = self._cross_val_smape(best_params, X_train, y_train)
-
-        return best_params, best_score
-
-    def _cross_val_mae(self, params: Dict[str, Any], X: pd.DataFrame, y: np.ndarray) -> float:
-        scores = []
-        for train_idx, val_idx in self._time_series_folds(len(X), self.cv_folds):
-            model = create_model(self.model_type, params)
-            model.fit(X.iloc[train_idx], y[train_idx])
-            pred = model.predict(X.iloc[val_idx])
-            scores.append(calculate_mae(y[val_idx], pred))
-        return float(np.mean(scores))
-
-    def _cross_val_smape(self, params: Dict[str, Any], X: pd.DataFrame, y: np.ndarray) -> float:
-        scores = []
-        for train_idx, val_idx in self._time_series_folds(len(X), self.cv_folds):
-            model = create_model(self.model_type, params)
-            model.fit(X.iloc[train_idx], y[train_idx])
-            pred = model.predict(X.iloc[val_idx])
-            scores.append(calculate_smape(y[val_idx], pred))
-        return float(np.mean(scores))
-
-    @staticmethod
-    def _time_series_folds(n_samples: int, cv_folds: int) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
-        if n_samples < cv_folds + 2:
-            raise ValueError("样本量不足，无法进行时间序列交叉验证")
-
-        for fold in range(cv_folds):
-            train_end = int(n_samples * (fold + 1) / (cv_folds + 1))
-            val_end = int(n_samples * (fold + 2) / (cv_folds + 1))
-            if train_end == 0 or val_end <= train_end:
-                continue
-            yield np.arange(0, train_end), np.arange(train_end, val_end)
-
     @staticmethod
     def _merge_tuned_params(base_params: Dict[str, Any], tuned_params: Dict[str, Any]) -> Dict[str, Any]:
         merged = base_params.copy()
@@ -654,7 +583,7 @@ class DirectTrainer:
             try:
                 score = self._cross_val_smape(params, X_train, y_train, folds=folds)
             except Exception as exc:
-                logger.warning("鍙傛暟缁勫悎 %s 澶辫触: %s", i, exc)
+                logger.warning("参数组合 %s 失败: %s", i, exc)
                 search_results.append({"iteration": i, "params": params, "status": "failed", "error": str(exc)})
                 continue
 
@@ -662,7 +591,7 @@ class DirectTrainer:
             if score < best_score:
                 best_score = score
                 best_params = dict(params)
-                logger.info("  鏂版渶浼?[%s/%s]: CV_sMAPE=%.4f", i, self.n_iter, score)
+                logger.info("  新最优 [%s/%s]: CV_sMAPE=%.4f", i, self.n_iter, score)
 
         if not np.isfinite(best_score):
             best_score = self._cross_val_smape(best_params, X_train, y_train, folds=folds)
@@ -677,6 +606,15 @@ class DirectTrainer:
         for rank, row in enumerate(ranked, start=1):
             row["rank"] = rank
 
+        successful = sum(1 for row in search_results if row.get("status") == "success")
+        failed = len(search_results) - successful
+        logger.info(
+            "  参数搜索完成: 成功 %s/%s, 失败 %s, best_CV_sMAPE=%.4f",
+            successful,
+            self.n_iter,
+            failed,
+            best_score,
+        )
         return best_params, best_score, search_results
 
     def _cross_val_smape(
@@ -698,6 +636,18 @@ class DirectTrainer:
             pred = model.predict(X.iloc[val_idx])
             scores.append(calculate_smape(y[val_idx], pred))
         return float(np.mean(scores))
+
+    @staticmethod
+    def _time_series_folds(n_samples: int, cv_folds: int) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
+        if n_samples < cv_folds + 2:
+            raise ValueError("样本量不足，无法进行时间序列交叉验证")
+
+        for fold in range(cv_folds):
+            train_end = int(n_samples * (fold + 1) / (cv_folds + 1))
+            val_end = int(n_samples * (fold + 2) / (cv_folds + 1))
+            if train_end == 0 or val_end <= train_end:
+                continue
+            yield np.arange(0, train_end), np.arange(train_end, val_end)
 
     def _save_report(self, results_df: pd.DataFrame) -> None:
         if self.model_dir is None:

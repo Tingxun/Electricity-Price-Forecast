@@ -171,7 +171,6 @@ class FeatureSelector:
         if not result:
             raise ValueError(f"模型 {model_name} 没有选中任何可用特征，请检查 FeatureSelector 配置")
 
-        logger.info("模型 %s 选中特征数: %s", model_name, len(result))
         return result
 
     def get_model_feature_info(self, model_name: str) -> Dict:
