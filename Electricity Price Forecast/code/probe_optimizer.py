@@ -1,9 +1,11 @@
 """
-Targeted LightGBM probe optimizer for the latest monthly holdout.
+Targeted LightGBM probe optimizer for monthly forward scenarios.
 
 The optimizer is intentionally separate from normal training. It searches
-hour-specific LightGBM probe parameters on a chosen month and writes the search
-trace, but it does not rewrite default model parameters automatically.
+hour-specific LightGBM probe parameters using only data available before the
+target month. Candidate scoring is done on the last month inside the training
+window, not on the target test month, and the optimizer does not rewrite default
+model parameters automatically.
 """
 
 from __future__ import annotations
@@ -199,7 +201,6 @@ class LightGBMProbeOptimizer:
 
     def _prepare_data_by_month(self, hour: int, feature_groups: Sequence[str]) -> Dict[str, Dict[str, Any]]:
         features_df, target_col = self.engineer.load_features(hour)
-        feature_groups = self._feature_groups_for_model(feature_groups)
         dates = pd.to_datetime(features_df["预测日期"])
         available_months = sorted(str(month) for month in dates.dt.to_period("M").unique())
         if self.test_months:
@@ -208,17 +209,6 @@ class LightGBMProbeOptimizer:
             requested_months = [available_months[-1]]
 
         return {month: self._prepare_data_from_frame(features_df, target_col, hour, feature_groups, month) for month in requested_months}
-
-    def _feature_groups_for_model(self, feature_groups: Sequence[str]) -> List[str]:
-        if not self.model_type.endswith("_v4"):
-            return list(feature_groups)
-        replacements = {
-            "direct_time": "direct_time_v4",
-            "direct_time_midday": "direct_time_midday_v4",
-            "direct_price_lag": "direct_price_lag_v4",
-            "direct_midday_regime": "direct_midday_regime_v4",
-        }
-        return [replacements.get(group, group) for group in feature_groups]
 
     def _prepare_data_from_frame(
         self,
