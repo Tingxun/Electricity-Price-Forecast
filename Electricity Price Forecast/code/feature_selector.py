@@ -12,14 +12,7 @@ logger = logging.getLogger(__name__)
 FEATURE_CONFIG: Dict = {
     "feature_groups": {
         "direct_time": {
-            "features": ["月份", "星期", "是否周末", "季度"],
-        },
-        "direct_time_midday": {
             "features": [
-                "月份",
-                "星期",
-                "是否周末",
-                "季度",
                 "星期_1",
                 "星期_2",
                 "星期_3",
@@ -27,9 +20,17 @@ FEATURE_CONFIG: Dict = {
                 "星期_5",
                 "星期_6",
                 "星期_7",
-                "是否周三",
-                "是否周六",
-                "是否周日",
+            ],
+        },
+        "direct_time_midday": {
+            "features": [
+                "星期_1",
+                "星期_2",
+                "星期_3",
+                "星期_4",
+                "星期_5",
+                "星期_6",
+                "星期_7",
             ],
         },
         "direct_price_lag": {
@@ -42,14 +43,14 @@ FEATURE_CONFIG: Dict = {
         },
         "direct_market_window": {
             "patterns": [
-                r"^(当前|滞后1h|未来1h)_市场_",
+                r"^(当前|滞后\d+h)_市场_",
                 r"^市场变化_",
                 r"^市场日形态_",
             ],
         },
         "direct_weather_window": {
             "patterns": [
-                r"^(当前|滞后1h|未来1h)_气象_",
+                r"^(当前|滞后\d+h)_气象_",
             ],
         },
         "direct_midday_regime": {
@@ -62,7 +63,7 @@ FEATURE_CONFIG: Dict = {
         },
         "direct_midday_weather_agg": {
             "patterns": [
-                r"^(当前|滞后1h|未来1h)_气象聚合_",
+                r"^(当前|滞后\d+h)_气象聚合_",
                 r"^午间气象聚合_",
             ],
         },

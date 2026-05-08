@@ -4,8 +4,8 @@
 预测场景：T时刻预测T+1日的24小时实时价格
 特征设计：
 - 实时价格滞后：仅使用T-2及之前的实时价格（避免数据泄露）
-- 可用市场边界：当前时点、1h滞后、1h未来及其衍生净负荷/爬坡特征
-- 气象特征：当前时点、1h滞后、1h未来
+- 可用市场边界：当前时点、多尺度小时滞后及其衍生净负荷/爬坡特征
+- 气象特征：当前时点、多尺度小时滞后
 - 预测策略：Direct策略，24个独立模型
 """
 
@@ -33,8 +33,12 @@ class DirectFeatureEngineer:
     
     def __init__(self):
         self.price_col = '平均出清价格-实时（元/MWh）'
-        self.price_lags = [2, 3, 4, 7, 14]
+        self.price_lags = [2, 3, 7, 14]
         self.price_windows = [3, 7, 14]
+        self.context_hour_lags = [1, 2, 3, 6, 12]
+        self.low_price_threshold = 80.0
+        self.shape_market_names = ['系统负荷', '净负荷', '市场化缺口']
+        self.midday_shape_market_names = ['光伏出力', '净负荷', '市场化缺口']
         self.market_cols = [
             '系统负荷-实时', '非市场化机组出力-实时', '风电出力-实时',
             '光伏出力-实时', '水电出力-实时', '联络线计划-实时'
@@ -154,20 +158,8 @@ class DirectFeatureEngineer:
         
         # 1. 时间特征
         features['预测日期'] = target_date
-        features['月份'] = target_date.month
-        for month in range(1, 13):
-            features[f'月份_{month}'] = 1 if target_date.month == month else 0
-        features['是否春季'] = 1 if target_date.month in [3, 4, 5] else 0
-        features['是否夏季'] = 1 if target_date.month in [6, 7, 8] else 0
-        features['星期'] = target_date.dayofweek + 1
-        features['是否周末'] = 1 if target_date.dayofweek >= 5 else 0
-        features['季度'] = (target_date.month - 1) // 3 + 1
-        features['目标小时'] = target_hour
         for weekday in range(1, 8):
             features[f'星期_{weekday}'] = 1 if target_date.dayofweek + 1 == weekday else 0
-        features['是否周三'] = 1 if target_date.dayofweek == 2 else 0
-        features['是否周六'] = 1 if target_date.dayofweek == 5 else 0
-        features['是否周日'] = 1 if target_date.dayofweek == 6 else 0
         
         # 2. 历史实时价格特征（仅使用T-2及之前，避免数据泄露）
         self._add_price_history_features(
@@ -181,21 +173,11 @@ class DirectFeatureEngineer:
         self._add_midday_low_price_features(features, daily_data, all_dates, date_index, target_hour)
         
         # 3. 其他特征的滑动窗口（可用市场边界 + 气象）
-        # 对于T+1日target_hour时刻，使用1h滞后和1h未来
+        # 对于T+1日target_hour时刻，使用当前与多尺度小时滞后
         # 注意：这里不使用日前价格；市场边界列来自预处理后的可用输入。
         
-        # 3.1 当前时刻特征
-        self._add_hour_features(features, target_date_data, target_hour, '当前')
-        
-        # 3.2 1h滞后特征
-        # 00:00的滞后1h是T+1日的23:00（前一天的23点，但属于T+1日的日前数据）
-        lag_hour = target_hour - 1 if target_hour > 0 else 23
-        self._add_hour_features(features, target_date_data, lag_hour, '滞后1h')
-        
-        # 3.3 1h未来特征
-        # 23:00的未来1h是T+1日的00:00（次日的0点，但属于T+1日的日前数据）
-        future_hour = target_hour + 1 if target_hour < 23 else 0
-        self._add_hour_features(features, target_date_data, future_hour, '未来1h')
+        for prefix, hour in self._context_hour_pairs(target_hour):
+            self._add_hour_features(features, target_date_data, hour, prefix)
         self._add_market_change_features(features)
         self._add_market_daily_shape_features(features, target_date_data, target_hour)
         self._add_midday_market_shape_features(features, target_date_data, target_hour)
@@ -251,16 +233,13 @@ class DirectFeatureEngineer:
             day_max = float(day_prices.max())
             features['历史价格_T2日均值'] = day_mean
             features['历史价格_T2日标准差'] = day_std
-            features['历史价格_T2日最小值'] = day_min
-            features['历史价格_T2日最大值'] = day_max
             features[f'历史价格_H{target_hour:02d}_T2相对日均值'] = current_price - day_mean
             features[f'历史价格_H{target_hour:02d}_T2日内极差位置'] = (
                 (current_price - day_min) / (day_max - day_min) if day_max != day_min else 0.0
             )
-            features[f'历史价格_H{target_hour:02d}_T2低价标记'] = 1 if current_price <= 80 else 0
 
         # 同小时滚动统计：窗口均从T-2往前取，确保预测时可用
-        for window in sorted(set([*self.price_windows, 21, 28])):
+        for window in self.price_windows:
             prices = []
             for lag in range(2, window + 2):
                 lag_date = all_dates[date_index - lag]
@@ -273,16 +252,10 @@ class DirectFeatureEngineer:
 
             if prices:
                 values = np.asarray(prices, dtype=float)
-                prefix = f'历史价格_H{target_hour:02d}_近{window}日' if window in self.price_windows else f'泛化历史价格_H{target_hour:02d}_近{window}日'
+                prefix = f'历史价格_H{target_hour:02d}_近{window}日'
                 features[f'{prefix}_均值'] = float(values.mean())
                 features[f'{prefix}_标准差'] = float(values.std())
-                features[f'{prefix}_最小值'] = float(values.min())
-                features[f'{prefix}_最大值'] = float(values.max())
-                features[f'{prefix}_低价次数'] = int(np.sum(values <= 80))
-                general_prefix = f'泛化历史价格_H{target_hour:02d}_近{window}日'
-                features[f'{general_prefix}_近零次数'] = int(np.sum(values <= 20))
-                features[f'{general_prefix}_零价次数'] = int(np.sum(values <= 0))
-                features[f'{general_prefix}_低价占比'] = float(np.mean(values <= 80))
+                features[f'{prefix}_低价占比'] = float(np.mean(values <= self.low_price_threshold))
 
         if 2 in lag_values and 3 in lag_values:
             features[f'历史价格_H{target_hour:02d}_T2减T3'] = lag_values[2] - lag_values[3]
@@ -320,9 +293,7 @@ class DirectFeatureEngineer:
             arr = np.asarray(list(values.values()), dtype=float)
             prefix = f'同星期历史_H{target_hour:02d}_近3周'
             features[f'{prefix}_均值'] = float(arr.mean())
-            features[f'{prefix}_最小值'] = float(arr.min())
-            features[f'{prefix}_最大值'] = float(arr.max())
-            features[f'{prefix}_低价次数'] = int(np.sum(arr <= 80))
+            features[f'{prefix}_标准差'] = float(arr.std())
         if 7 in values and 14 in values:
             features[f'同星期历史_H{target_hour:02d}_T7减T14'] = values[7] - values[14]
 
@@ -353,12 +324,7 @@ class DirectFeatureEngineer:
         valley_hour = int(hours[int(np.argmin(prices))])
 
         features['午间低价_T2_H08H15均值'] = midday_mean
-        features['午间低价_T2_H08H15最小值'] = midday_min
-        features['午间低价_T2_H08H15最大值'] = midday_max
-        features['午间低价_T2_H08H15低价小时数'] = int(np.sum(prices <= 80))
-        features['午间低价_T2_H08H15近零小时数'] = int(np.sum(prices <= 20))
-        features['泛化午间低价_T2_H08H15零价小时数'] = int(np.sum(prices <= 0))
-        features['泛化午间低价_T2_H08H15低价占比'] = float(np.mean(prices <= 80))
+        features['午间低价_T2_H08H15低价占比'] = float(np.mean(prices <= self.low_price_threshold))
         features['午间低价_T2_谷底小时'] = valley_hour
         features['午间低价_T2_目标小时距谷底'] = int(target_hour - valley_hour)
         features[f'午间低价_H{target_hour:02d}_T2相对午间均值'] = float(current_price - midday_mean)
@@ -373,8 +339,6 @@ class DirectFeatureEngineer:
             denominator = float(np.linalg.norm(t2_centered) * np.linalg.norm(t7_centered))
             features['泛化午间低价_T2_T7曲线相关'] = float(np.dot(t2_centered, t7_centered) / denominator) if denominator else 0.0
             features['泛化午间低价_T2_T7均值差'] = float(prices.mean() - t7_prices.mean())
-            features['泛化午间低价_T2_T7低价小时数差'] = int(np.sum(prices <= 80) - np.sum(t7_prices <= 80))
-            features['泛化午间低价_T2_T7零价小时数差'] = int(np.sum(prices <= 0) - np.sum(t7_prices <= 0))
 
     def _midday_hour_prices(self, date_data: Optional[pd.DataFrame]) -> List[Tuple[int, float]]:
         if date_data is None:
@@ -385,6 +349,12 @@ class DirectFeatureEngineer:
             if price is not None:
                 hour_prices.append((hour, price))
         return hour_prices
+
+    def _context_hour_pairs(self, target_hour: int) -> List[Tuple[str, int]]:
+        pairs = [('当前', target_hour)]
+        for lag in self.context_hour_lags:
+            pairs.append((f'滞后{lag}h', (target_hour - lag) % 24))
+        return pairs
     
     def _add_hour_features(self, features: Dict, date_data: pd.DataFrame, 
                           hour: int, prefix: str):
@@ -400,7 +370,7 @@ class DirectFeatureEngineer:
         hour : int
             小时
         prefix : str
-            特征前缀（'当前', '滞后1h', '未来1h'）
+            特征前缀（'当前', '滞后Nh'）
         """
         hour_data = date_data[date_data['小时'] == hour]
         if len(hour_data) != 1:
@@ -416,10 +386,11 @@ class DirectFeatureEngineer:
         # 气象特征
         weather_cols = [c for c in date_data.columns 
                        if any(x in c for x in ['温度', '风速', '湿度', '压强', '云量', '辐照度', '降雨量'])]
-        for col in weather_cols:
-            if col in row.index and pd.notna(row[col]):
-                short_name = col.replace('-预测', '').replace('-实际', '')
-                features[f'{prefix}_气象_{short_name}'] = row[col]
+        if prefix == '滞后3h':
+            for col in weather_cols:
+                if col in row.index and pd.notna(row[col]):
+                    short_name = col.replace('-预测', '').replace('-实际', '')
+                    features[f'{prefix}_气象_{short_name}'] = row[col]
 
     def _compute_market_values(self, row: pd.Series) -> Dict[str, float]:
         """从单小时市场边界中构造电价相关衍生变量。"""
@@ -438,32 +409,10 @@ class DirectFeatureEngineer:
         non_market = values.get('非市场化机组出力')
 
         renewable = self._sum_available(wind, solar)
-        stable_supply = self._sum_available(hydro, non_market, tie)
-        covered_supply = self._sum_available(renewable, hydro, non_market, tie)
-
-        if renewable is not None:
-            values['新能源出力'] = renewable
         if load is not None and renewable is not None:
             values['净负荷'] = load - renewable
-            values['新能源占负荷比'] = self._safe_div(renewable, load)
-        if load is not None and renewable is not None and hydro is not None:
-            values['剩余负荷'] = load - renewable - hydro
-        if load is not None and covered_supply is not None:
-            values['市场化缺口'] = load - covered_supply
-            values['供需覆盖率'] = self._safe_div(covered_supply, load)
-
-        ratio_inputs = {
-            '风电占负荷比': wind,
-            '光伏占负荷比': solar,
-            '水电占负荷比': hydro,
-            '联络线占负荷比': tie,
-            '非市场占负荷比': non_market,
-            '稳定供给占负荷比': stable_supply,
-        }
-        if load is not None:
-            for name, numerator in ratio_inputs.items():
-                if numerator is not None:
-                    values[name] = self._safe_div(numerator, load)
+        if load is not None and renewable is not None and hydro is not None and non_market is not None and tie is not None:
+            values['市场化缺口'] = load - renewable - hydro - non_market - tie
 
         return values
 
@@ -471,18 +420,23 @@ class DirectFeatureEngineer:
         """添加相邻小时市场边界变化，帮助模型识别爬坡与供需转折。"""
         names = [
             '系统负荷', '风电出力', '光伏出力', '水电出力', '联络线计划', '非市场化机组出力',
-            '新能源出力', '净负荷', '剩余负荷', '市场化缺口', '新能源占负荷比', '供需覆盖率'
+            '净负荷', '市场化缺口'
         ]
 
         for name in names:
             current_key = f'当前_市场_{name}'
-            lag_key = f'滞后1h_市场_{name}'
-            future_key = f'未来1h_市场_{name}'
+            for lag in self.context_hour_lags:
+                lag_key = f'滞后{lag}h_市场_{name}'
+                if current_key in features and lag_key in features:
+                    features[f'市场变化_当前减滞后{lag}h_{name}'] = features[current_key] - features[lag_key]
 
-            if current_key in features and lag_key in features:
-                features[f'市场变化_当前减滞后1h_{name}'] = features[current_key] - features[lag_key]
-            if future_key in features and current_key in features:
-                features[f'市场变化_未来1h减当前_{name}'] = features[future_key] - features[current_key]
+            for previous_lag, lag in zip(self.context_hour_lags, self.context_hour_lags[1:]):
+                previous_key = f'滞后{previous_lag}h_市场_{name}'
+                lag_key = f'滞后{lag}h_市场_{name}'
+                if previous_key in features and lag_key in features:
+                    features[f'市场变化_滞后{previous_lag}h减滞后{lag}h_{name}'] = (
+                        features[previous_key] - features[lag_key]
+                    )
 
     def _add_market_daily_shape_features(self, features: Dict, date_data: pd.DataFrame, target_hour: int) -> None:
         """添加目标日市场边界日内形态统计，不使用价格列。"""
@@ -495,17 +449,13 @@ class DirectFeatureEngineer:
         if len(hourly_values) != 24:
             return
 
-        for name in ['系统负荷', '新能源出力', '净负荷', '剩余负荷', '市场化缺口', '供需覆盖率']:
+        for name in self.shape_market_names:
             values = [item[name] for item in hourly_values if name in item and pd.notna(item[name])]
             if len(values) != 24:
                 continue
 
             arr = np.asarray(values, dtype=float)
             current = hourly_values[target_hour].get(name)
-            features[f'市场日形态_{name}_均值'] = float(arr.mean())
-            features[f'市场日形态_{name}_标准差'] = float(arr.std())
-            features[f'市场日形态_{name}_最小值'] = float(arr.min())
-            features[f'市场日形态_{name}_最大值'] = float(arr.max())
             if current is not None:
                 features[f'市场日形态_H{target_hour:02d}_{name}_相对日均值'] = float(current - arr.mean())
                 denominator = arr.max() - arr.min()
@@ -525,7 +475,7 @@ class DirectFeatureEngineer:
                 return
             hourly_values.append((hour, self._compute_market_values(hour_data.iloc[0])))
 
-        for name in ['系统负荷', '光伏出力', '新能源出力', '净负荷', '剩余负荷', '市场化缺口', '供需覆盖率']:
+        for name in self.midday_shape_market_names:
             values = []
             current = None
             for hour, item in hourly_values:
@@ -540,10 +490,6 @@ class DirectFeatureEngineer:
 
             arr = np.asarray(values, dtype=float)
             prefix = f'午间市场形态_{name}'
-            features[f'{prefix}_均值'] = float(arr.mean())
-            features[f'{prefix}_标准差'] = float(arr.std())
-            features[f'{prefix}_最小值'] = float(arr.min())
-            features[f'{prefix}_最大值'] = float(arr.max())
             features[f'{prefix}_H08到H15爬坡'] = float(arr[-1] - arr[0])
             denominator = arr.max() - arr.min()
             features[f'午间市场形态_H{target_hour:02d}_{name}_相对午间均值'] = float(current - arr.mean())
@@ -561,11 +507,7 @@ class DirectFeatureEngineer:
         if not weather_cols:
             return
 
-        for prefix, hour in [
-            ('当前', target_hour),
-            ('滞后1h', target_hour - 1 if target_hour > 0 else 23),
-            ('未来1h', target_hour + 1 if target_hour < 23 else 0),
-        ]:
+        for prefix, hour in self._context_hour_pairs(target_hour):
             hour_data = date_data[date_data['小时'] == hour]
             if len(hour_data) != 1:
                 continue
@@ -582,7 +524,6 @@ class DirectFeatureEngineer:
                     if values.size == 0:
                         continue
                     features[f'午间气象聚合_{keyword}_均值'] = float(values.mean())
-                    features[f'午间气象聚合_{keyword}_最大值'] = float(values.max())
                     features[f'午间气象聚合_{keyword}_标准差'] = float(values.std())
 
     def _add_weather_aggregates(self, features: Dict, row: pd.Series, prefix: str, weather_cols: List[str]) -> None:
@@ -595,8 +536,6 @@ class DirectFeatureEngineer:
                 continue
             arr = np.asarray(values, dtype=float)
             features[f'{prefix}_气象聚合_{keyword}_均值'] = float(arr.mean())
-            features[f'{prefix}_气象聚合_{keyword}_最大值'] = float(arr.max())
-            features[f'{prefix}_气象聚合_{keyword}_最小值'] = float(arr.min())
             features[f'{prefix}_气象聚合_{keyword}_标准差'] = float(arr.std())
 
     @staticmethod
@@ -653,7 +592,7 @@ class DirectFeatureEngineer:
             'hours': list(hourly_results.keys()),
             'n_samples_per_hour': len(first_df),
             'feature_counts_per_hour': feature_counts,
-            'description': '滑动窗口Direct多步预测，实时价格仅T-2及之前，市场/气象特征使用当前、1h滞后和1h未来'
+            'description': '滑动窗口Direct多步预测，实时价格仅T-2及之前，市场/气象特征使用当前与多尺度小时滞后'
         }
         
         with open(info_file, 'w', encoding='utf-8') as f:
