@@ -11,6 +11,8 @@ if str(CODE_DIR) not in sys.path:
 
 from utils.auto_model_selection import AutoCandidate, generate_auto_candidates, monthly_time_series_folds
 from utils.data_split import split_by_months
+from backtest_direct import DirectMonthlyBacktester
+from config import Config
 from model_factory import create_model, get_default_params, get_param_space, list_model_types
 from train_direct import DirectTrainer
 from utils.model_store import safe_period_label
@@ -39,6 +41,48 @@ class ForwardBacktestTests(unittest.TestCase):
                 split = split_by_months(self.df, self.date_col, [month])
                 self.assertEqual(split.train_end, train_end)
                 self.assertLess(pd.Timestamp(split.train_end), pd.Timestamp(split.test_start))
+
+    def test_weekly_backtest_windows_cover_fixed_test_month(self):
+        windows = DirectMonthlyBacktester._weekly_windows_for_month(self.df, self.date_col, "2025-03")
+
+        self.assertEqual(
+            windows,
+            [
+                ("W01", "2025-03-01", "2025-03-07"),
+                ("W02", "2025-03-08", "2025-03-14"),
+                ("W03", "2025-03-15", "2025-03-21"),
+                ("W04", "2025-03-22", "2025-03-28"),
+                ("W05", "2025-03-29", "2025-03-31"),
+            ],
+        )
+
+    def test_weekly_backtest_split_uses_only_data_before_window(self):
+        train_mask, test_mask, split_info = DirectMonthlyBacktester._split_by_week_window(
+            self.df,
+            test_month="2025-03",
+            week_start="2025-03-08",
+            week_end="2025-03-14",
+        )
+
+        train_dates = pd.to_datetime(self.df.loc[train_mask, self.date_col])
+        test_dates = pd.to_datetime(self.df.loc[test_mask, self.date_col])
+        self.assertEqual(split_info["split_strategy"], "weekly_retrain")
+        self.assertEqual(split_info["train_end"], "2025-03-07")
+        self.assertEqual(split_info["test_start"], "2025-03-08")
+        self.assertEqual(split_info["test_end"], "2025-03-14")
+        self.assertTrue((train_dates < pd.Timestamp("2025-03-08")).all())
+        self.assertTrue(((test_dates >= pd.Timestamp("2025-03-08")) & (test_dates <= pd.Timestamp("2025-03-14"))).all())
+
+    def test_backtester_retrain_frequency_controls_output_prefix(self):
+        monthly = DirectMonthlyBacktester(Config(), "lightgbm_auto", 0, 3, 3, retrain_frequency="monthly")
+        weekly = DirectMonthlyBacktester(Config(), "lightgbm_auto", 0, 3, 3, retrain_frequency="weekly")
+
+        self.assertEqual(monthly.rolling_mode, "expanding_forward")
+        self.assertEqual(monthly.output_prefix, "monthly_backtest")
+        self.assertEqual(weekly.rolling_mode, "expanding_forward_weekly")
+        self.assertEqual(weekly.output_prefix, "weekly_backtest")
+        with self.assertRaises(ValueError):
+            DirectMonthlyBacktester(Config(), "lightgbm_auto", 0, 3, 3, retrain_frequency="daily")
 
     def test_v3_v4_model_aliases_are_not_registered(self):
         self.assertIn("lightgbm_auto", list_model_types())

@@ -111,10 +111,15 @@ def backtest_mode(config: Config, args: argparse.Namespace) -> None:
         min_train_months=args.min_train_months,
         start_month=args.start_month,
         end_month=args.end_month,
+        retrain_frequency=args.retrain_frequency,
     ).run(args.hours)
     print(results.to_string(index=False))
     ok = results[results["status"] == "success"]
-    print(f"\nAverage sMAPE={ok['smape'].mean():.2f}%")
+    if not ok.empty and "n_test" in ok:
+        avg_smape = float((ok["smape"] * ok["n_test"]).sum() / ok["n_test"].sum())
+    else:
+        avg_smape = float(ok["smape"].mean())
+    print(f"\nAverage sMAPE={avg_smape:.2f}%")
 
 def list_mode() -> None:
     print("可用 Direct 基模型:")
@@ -162,6 +167,12 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_parser.add_argument("--min-train-months", type=int, default=3, help="开始回测前至少保留的训练月份数")
     backtest_parser.add_argument("--start-month", default=FORWARD_DEFAULT_START_MONTH, help="首个测试月份 YYYY-MM")
     backtest_parser.add_argument("--end-month", default=FORWARD_DEFAULT_END_MONTH, help="最后测试月份 YYYY-MM")
+    backtest_parser.add_argument(
+        "--retrain-frequency",
+        choices=["monthly", "weekly"],
+        default="monthly",
+        help="monthly 表示每个测试月训练一次；weekly 表示测试月内每 7 天重新训练一次",
+    )
 
     subparsers.add_parser("list", help="列出可用 Direct 基模型")
 

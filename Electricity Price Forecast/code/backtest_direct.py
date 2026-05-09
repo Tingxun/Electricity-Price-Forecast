@@ -1,5 +1,5 @@
 """
-Expanding-window monthly backtest for Direct forecasting models.
+Expanding-window monthly or weekly-retrain backtest for Direct forecasting models.
 """
 
 import argparse
@@ -33,10 +33,12 @@ logger = logging.getLogger(__name__)
 FORWARD_DEFAULT_START_MONTH = "2025-03"
 FORWARD_DEFAULT_END_MONTH = "2025-06"
 ROLLING_MODE = "expanding_forward"
+WEEKLY_ROLLING_MODE = "expanding_forward_weekly"
+DATE_COL = "\u9884\u6d4b\u65e5\u671f"
 
 
 class DirectMonthlyBacktester:
-    """Run expanding-window monthly backtests without overwriting saved models."""
+    """Run expanding-window backtests without overwriting saved models."""
 
     def __init__(
         self,
@@ -47,7 +49,10 @@ class DirectMonthlyBacktester:
         min_train_months: int,
         start_month: Optional[str] = FORWARD_DEFAULT_START_MONTH,
         end_month: Optional[str] = FORWARD_DEFAULT_END_MONTH,
+        retrain_frequency: str = "monthly",
     ):
+        if retrain_frequency not in {"monthly", "weekly"}:
+            raise ValueError("retrain_frequency must be 'monthly' or 'weekly'")
         self.config = config
         self.model_type = model_type
         self.n_iter = n_iter
@@ -55,9 +60,11 @@ class DirectMonthlyBacktester:
         self.min_train_months = min_train_months
         self.start_month = start_month
         self.end_month = end_month
+        self.retrain_frequency = retrain_frequency
         self.feature_selector = FeatureSelector()
         self.engineer = DirectFeatureEngineer()
-        self.rolling_mode = ROLLING_MODE
+        self.rolling_mode = WEEKLY_ROLLING_MODE if retrain_frequency == "weekly" else ROLLING_MODE
+        self.output_prefix = "weekly_backtest" if retrain_frequency == "weekly" else "monthly_backtest"
         self.prediction_rows: List[Dict[str, Any]] = []
 
     def run(self, hours: Optional[List[int]] = None) -> pd.DataFrame:
@@ -67,7 +74,7 @@ class DirectMonthlyBacktester:
         reference_df, _ = self.engineer.load_features(hours[0])
         months = list_rolling_months(
             reference_df,
-            "预测日期",
+            DATE_COL,
             min_train_months=self.min_train_months,
             start_month=self.start_month,
             end_month=self.end_month,
@@ -78,20 +85,48 @@ class DirectMonthlyBacktester:
         rows = []
         for test_month in months:
             logger.info("开始回测月份 %s", test_month)
-            for hour in hours:
-                try:
-                    rows.append(self._run_one_hour(test_month, hour))
-                except Exception as exc:
-                    logger.exception("回测失败: month=%s, H%02d", test_month, hour)
-                    rows.append({"test_month": test_month, "hour": hour, "status": "failed", "error": str(exc)})
+            if self.retrain_frequency == "weekly":
+                windows = self._weekly_windows_for_month(reference_df, DATE_COL, test_month)
+                for week_id, week_start, week_end in windows:
+                    logger.info("开始周度回测 %s %s %s-%s", test_month, week_id, week_start, week_end)
+                    for hour in hours:
+                        try:
+                            rows.append(self._run_one_hour(test_month, hour, week_id, week_start, week_end))
+                        except Exception as exc:
+                            logger.exception("回测失败: month=%s, %s, H%02d", test_month, week_id, hour)
+                            rows.append(
+                                {
+                                    "test_month": test_month,
+                                    "week_id": week_id,
+                                    "week_start": week_start,
+                                    "week_end": week_end,
+                                    "hour": hour,
+                                    "status": "failed",
+                                    "error": str(exc),
+                                }
+                            )
+            else:
+                for hour in hours:
+                    try:
+                        rows.append(self._run_one_hour(test_month, hour))
+                    except Exception as exc:
+                        logger.exception("回测失败: month=%s, H%02d", test_month, hour)
+                        rows.append({"test_month": test_month, "hour": hour, "status": "failed", "error": str(exc)})
 
         results_df = pd.DataFrame(rows)
         self._save_outputs(results_df)
         return results_df
 
-    def _run_one_hour(self, test_month: str, hour: int) -> Dict[str, Any]:
+    def _run_one_hour(
+        self,
+        test_month: str,
+        hour: int,
+        week_id: Optional[str] = None,
+        week_start: Optional[str] = None,
+        week_end: Optional[str] = None,
+    ) -> Dict[str, Any]:
         start = time.time()
-        data = self._prepare_data(hour, test_month)
+        data = self._prepare_data(hour, test_month, week_start=week_start, week_end=week_end)
         selected_structure = "fixed_default"
         selected_feature_groups: List[str] = []
         if self.model_type == "lightgbm_auto":
@@ -129,8 +164,11 @@ class DirectMonthlyBacktester:
                 {
                     "rolling_mode": self.rolling_mode,
                     "test_month": test_month,
+                    "week_id": week_id,
+                    "week_start": week_start,
+                    "week_end": week_end,
                     "hour": hour,
-                    "预测日期": pd.Timestamp(date).strftime("%Y-%m-%d"),
+                    DATE_COL: pd.Timestamp(date).strftime("%Y-%m-%d"),
                     "actual": float(actual),
                     "pred": float(pred),
                     "error": float(pred - actual),
@@ -143,6 +181,9 @@ class DirectMonthlyBacktester:
         return {
             "rolling_mode": self.rolling_mode,
             "test_month": test_month,
+            "week_id": week_id,
+            "week_start": week_start,
+            "week_end": week_end,
             "hour": hour,
             "status": "success",
             "train_start": data["split_info"]["train_start"],
@@ -162,22 +203,41 @@ class DirectMonthlyBacktester:
             "best_params": json.dumps(best_params, ensure_ascii=False),
         }
 
-    def _prepare_data(self, hour: int, test_month: str) -> Dict[str, Any]:
+    def _prepare_data(
+        self,
+        hour: int,
+        test_month: str,
+        week_start: Optional[str] = None,
+        week_end: Optional[str] = None,
+    ) -> Dict[str, Any]:
         features_df, target_col = self.engineer.load_features(hour)
-        candidate_features = [col for col in features_df.columns if col not in [target_col, "预测日期"]]
+        candidate_features = [col for col in features_df.columns if col not in [target_col, DATE_COL]]
         numeric_features = features_df[candidate_features].select_dtypes(include=[np.number]).columns.tolist()
         feature_cols = self.feature_selector.select_features_for_model(self.model_type, numeric_features, hour=hour)
         feature_info = self.feature_selector.get_model_feature_info(self.model_type)
-        split = split_by_months(features_df, "预测日期", [test_month])
+        if week_start is not None or week_end is not None:
+            if week_start is None or week_end is None:
+                raise ValueError("week_start and week_end must be provided together")
+            train_mask, test_mask, split_info = self._split_by_week_window(
+                features_df,
+                test_month=test_month,
+                week_start=week_start,
+                week_end=week_end,
+            )
+        else:
+            split = split_by_months(features_df, DATE_COL, [test_month])
+            train_mask = split.train_mask
+            test_mask = split.test_mask
+            split_info = split.to_dict()
 
-        X_train = features_df.loc[split.train_mask, feature_cols].reset_index(drop=True)
-        y_train = features_df.loc[split.train_mask, target_col].to_numpy()
-        X_test = features_df.loc[split.test_mask, feature_cols].reset_index(drop=True)
-        y_test = features_df.loc[split.test_mask, target_col].to_numpy()
-        full_X_train = features_df.loc[split.train_mask, numeric_features].reset_index(drop=True)
-        full_X_test = features_df.loc[split.test_mask, numeric_features].reset_index(drop=True)
-        train_dates = features_df.loc[split.train_mask, "预测日期"].reset_index(drop=True)
-        test_dates = features_df.loc[split.test_mask, "预测日期"].reset_index(drop=True)
+        X_train = features_df.loc[train_mask, feature_cols].reset_index(drop=True)
+        y_train = features_df.loc[train_mask, target_col].to_numpy()
+        X_test = features_df.loc[test_mask, feature_cols].reset_index(drop=True)
+        y_test = features_df.loc[test_mask, target_col].to_numpy()
+        full_X_train = features_df.loc[train_mask, numeric_features].reset_index(drop=True)
+        full_X_test = features_df.loc[test_mask, numeric_features].reset_index(drop=True)
+        train_dates = features_df.loc[train_mask, DATE_COL].reset_index(drop=True)
+        test_dates = features_df.loc[test_mask, DATE_COL].reset_index(drop=True)
 
         if feature_info.get("normalize", False):
             scaler = StandardScaler()
@@ -195,8 +255,72 @@ class DirectMonthlyBacktester:
             "feature_cols": feature_cols,
             "train_dates": train_dates,
             "test_dates": test_dates,
-            "split_info": split.to_dict(),
+            "split_info": split_info,
         }
+
+    @staticmethod
+    def _weekly_windows_for_month(
+        df: pd.DataFrame,
+        date_col: str,
+        test_month: str,
+    ) -> List[Tuple[str, str, str]]:
+        dates = pd.to_datetime(df[date_col])
+        month = pd.Period(test_month, freq="M")
+        month_dates = dates[dates.dt.to_period("M") == month]
+        if month_dates.empty:
+            raise ValueError(f"no dates found for test month {test_month}")
+
+        month_start = month_dates.min().normalize()
+        month_end = month_dates.max().normalize()
+        windows: List[Tuple[str, str, str]] = []
+        window_start = month_start
+        idx = 1
+        while window_start <= month_end:
+            window_end = min(window_start + pd.Timedelta(days=6), month_end)
+            windows.append(
+                (
+                    f"W{idx:02d}",
+                    window_start.strftime("%Y-%m-%d"),
+                    window_end.strftime("%Y-%m-%d"),
+                )
+            )
+            window_start = window_end + pd.Timedelta(days=1)
+            idx += 1
+        return windows
+
+    @staticmethod
+    def _split_by_week_window(
+        df: pd.DataFrame,
+        test_month: str,
+        week_start: str,
+        week_end: str,
+    ) -> Tuple[pd.Series, pd.Series, Dict[str, Any]]:
+        dates = pd.to_datetime(df[DATE_COL])
+        start = pd.Timestamp(week_start)
+        end = pd.Timestamp(week_end)
+        month = pd.Period(test_month, freq="M")
+
+        train_mask = dates < start
+        test_mask = (dates >= start) & (dates <= end) & (dates.dt.to_period("M") == month)
+        if not train_mask.any():
+            raise ValueError(f"no training data before weekly window {week_start}")
+        if not test_mask.any():
+            raise ValueError(f"no test data in weekly window {week_start} to {week_end}")
+
+        train_dates = dates[train_mask]
+        test_dates = dates[test_mask]
+        split_info = {
+            "split_strategy": "weekly_retrain",
+            "test_months": [test_month],
+            "test_period": test_month,
+            "train_start": train_dates.min().strftime("%Y-%m-%d"),
+            "train_end": train_dates.max().strftime("%Y-%m-%d"),
+            "test_start": test_dates.min().strftime("%Y-%m-%d"),
+            "test_end": test_dates.max().strftime("%Y-%m-%d"),
+            "n_train": int(train_mask.sum()),
+            "n_test": int(test_mask.sum()),
+        }
+        return train_mask, test_mask, split_info
 
     @staticmethod
     def _price_bucket(value: float) -> str:
@@ -264,14 +388,25 @@ class DirectMonthlyBacktester:
         log_dir = self.config.get_result_path("logs") / "direct" / self.model_type
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        results_df.to_csv(log_dir / "monthly_backtest.csv", index=False, encoding="utf-8-sig")
+        results_df.to_csv(log_dir / f"{self.output_prefix}.csv", index=False, encoding="utf-8-sig")
         prediction_df = pd.DataFrame(self.prediction_rows)
         if not prediction_df.empty:
-            prediction_df.to_csv(log_dir / "monthly_backtest_predictions.csv", index=False, encoding="utf-8-sig")
+            prediction_df.to_csv(log_dir / f"{self.output_prefix}_predictions.csv", index=False, encoding="utf-8-sig")
 
         success_df = results_df[results_df["status"] == "success"].copy()
+        summary_source_df = success_df
+        if not prediction_df.empty:
+            summary_source_df = (
+                prediction_df.groupby(["test_month", "hour"], as_index=False)
+                .agg(
+                    mae=("abs_error", "mean"),
+                    rmse=("error", lambda s: float(np.sqrt(np.mean(np.square(s))))),
+                    smape=("sape", "mean"),
+                    acc_rate=("sape", lambda s: float((s < 20.0).mean() * 100.0)),
+                )
+            )
         month_summary = (
-            success_df.groupby("test_month", as_index=False)
+            summary_source_df.groupby("test_month", as_index=False)
             .agg(
                 mae=("mae", "mean"),
                 rmse=("rmse", "mean"),
@@ -281,30 +416,50 @@ class DirectMonthlyBacktester:
             )
         )
         month_summary["rolling_mode"] = self.rolling_mode
-        month_summary["midday_smape"] = month_summary["test_month"].map(self._band_smape(success_df, range(8, 16)))
+        month_summary["midday_smape"] = month_summary["test_month"].map(self._band_smape(summary_source_df, range(8, 16)))
         month_summary["non_midday_smape"] = month_summary["test_month"].map(
-            self._band_smape(success_df, [*range(0, 8), *range(16, 24)])
+            self._band_smape(summary_source_df, [*range(0, 8), *range(16, 24)])
         )
-        month_summary["worst_hours"] = month_summary["test_month"].map(self._worst_hours(success_df))
+        month_summary["worst_hours"] = month_summary["test_month"].map(self._worst_hours(summary_source_df))
         if not prediction_df.empty:
+            prediction_metrics = (
+                prediction_df.groupby("test_month", as_index=False)
+                .agg(
+                    pred_mae=("abs_error", "mean"),
+                    pred_rmse=("error", lambda s: float(np.sqrt(np.mean(np.square(s))))),
+                    pred_smape=("sape", "mean"),
+                )
+            )
+            month_summary = month_summary.merge(prediction_metrics, on="test_month", how="left")
+            month_summary["mae"] = month_summary["pred_mae"].fillna(month_summary["mae"])
+            month_summary["rmse"] = month_summary["pred_rmse"].fillna(month_summary["rmse"])
+            month_summary["smape"] = month_summary["pred_smape"].fillna(month_summary["smape"])
+            month_summary = month_summary.drop(columns=["pred_mae", "pred_rmse", "pred_smape"])
             monthly_acc = prediction_df.groupby("test_month")["sape"].apply(lambda s: float((s < 20.0).mean() * 100.0))
             month_summary["monthly_acc_rate"] = month_summary["test_month"].map(monthly_acc)
         else:
             month_summary["monthly_acc_rate"] = month_summary["hourly_acc_rate"]
         month_summary["smape_below_30"] = month_summary["smape"] < 30.0
         month_summary["monthly_acc_rate_ge_50"] = month_summary["monthly_acc_rate"] >= 50.0
-        month_summary.to_csv(log_dir / "monthly_backtest_summary.csv", index=False, encoding="utf-8-sig")
+        month_summary.to_csv(log_dir / f"{self.output_prefix}_summary.csv", index=False, encoding="utf-8-sig")
 
         summary = {
             "model_type": self.model_type,
             "rolling_mode": self.rolling_mode,
+            "retrain_frequency": self.retrain_frequency,
             "start_month": self.start_month,
             "end_month": self.end_month,
             "n_months": int(month_summary.shape[0]),
             "n_rows": int(success_df.shape[0]),
-            "overall_mae": float(success_df["mae"].mean()) if not success_df.empty else None,
-            "overall_rmse": float(success_df["rmse"].mean()) if not success_df.empty else None,
-            "overall_smape": float(success_df["smape"].mean()) if not success_df.empty else None,
+            "overall_mae": float(prediction_df["abs_error"].mean())
+            if not prediction_df.empty
+            else (float(success_df["mae"].mean()) if not success_df.empty else None),
+            "overall_rmse": float(np.sqrt(np.mean(np.square(prediction_df["error"]))))
+            if not prediction_df.empty
+            else (float(success_df["rmse"].mean()) if not success_df.empty else None),
+            "overall_smape": float(prediction_df["sape"].mean())
+            if not prediction_df.empty
+            else (float(success_df["smape"].mean()) if not success_df.empty else None),
             "overall_acc_rate": float((prediction_df["sape"] < 20.0).mean() * 100.0) if not prediction_df.empty else None,
             "avg_under20_hours": float(month_summary["under20_hours"].mean()) if not month_summary.empty else None,
             "months_below_30": int(month_summary["smape_below_30"].sum()) if not month_summary.empty else 0,
@@ -314,7 +469,7 @@ class DirectMonthlyBacktester:
                 ["test_month", "smape", "monthly_acc_rate", "worst_hours"],
             ].to_dict("records") if not month_summary.empty else [],
         }
-        with open(log_dir / "monthly_backtest_overall.json", "w", encoding="utf-8") as f:
+        with open(log_dir / f"{self.output_prefix}_overall.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
 
     @staticmethod
@@ -354,6 +509,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-train-months", type=int, default=3, help="开始回测前至少保留的训练月份数")
     parser.add_argument("--start-month", default=FORWARD_DEFAULT_START_MONTH, help="首个测试月份 YYYY-MM")
     parser.add_argument("--end-month", default=FORWARD_DEFAULT_END_MONTH, help="最后测试月份 YYYY-MM")
+    parser.add_argument(
+        "--retrain-frequency",
+        choices=["monthly", "weekly"],
+        default="monthly",
+        help="monthly 表示每个测试月训练一次；weekly 表示测试月内每 7 天重新训练一次",
+    )
     return parser.parse_args()
 
 
@@ -368,10 +529,15 @@ def main() -> None:
         min_train_months=args.min_train_months,
         start_month=args.start_month,
         end_month=args.end_month,
+        retrain_frequency=args.retrain_frequency,
     ).run(args.hours)
     print(results.to_string(index=False))
     ok = results[results["status"] == "success"]
-    print(f"\nAverage sMAPE={ok['smape'].mean():.2f}%")
+    if not ok.empty and "n_test" in ok:
+        avg_smape = float((ok["smape"] * ok["n_test"]).sum() / ok["n_test"].sum())
+    else:
+        avg_smape = float(ok["smape"].mean())
+    print(f"\nAverage sMAPE={avg_smape:.2f}%")
 
 
 if __name__ == "__main__":
