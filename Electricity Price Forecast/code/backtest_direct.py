@@ -24,6 +24,7 @@ from utils.data_split import list_rolling_months, split_by_months
 from feature_engineering_direct import DirectFeatureEngineer
 from feature_selector import FeatureSelector
 from model_factory import create_model, get_default_params, get_param_space, list_model_types
+from train_direct import DirectTrainer
 from utils.metrics import calculate_accuracy_rate, calculate_mae, calculate_rmse, calculate_sape, calculate_smape
 
 
@@ -91,7 +92,32 @@ class DirectMonthlyBacktester:
     def _run_one_hour(self, test_month: str, hour: int) -> Dict[str, Any]:
         start = time.time()
         data = self._prepare_data(hour, test_month)
-        best_params, cv_smape = self._search_best_params(data["X_train"], data["y_train"], hour, 42 + hour)
+        selected_structure = "fixed_default"
+        selected_feature_groups: List[str] = []
+        if self.model_type == "lightgbm_auto":
+            helper = DirectTrainer(
+                config=self.config,
+                model_type=self.model_type,
+                n_iter=self.n_iter,
+                cv_folds=self.cv_folds,
+                test_months=[test_month],
+            )
+            selection_info = helper._select_auto_structure(data, hour)
+            data["feature_cols"] = selection_info["feature_cols"]
+            data["X_train"] = data["full_X_train"][data["feature_cols"]].reset_index(drop=True)
+            data["X_test"] = data["full_X_test"][data["feature_cols"]].reset_index(drop=True)
+            best_params, cv_smape, _ = helper._search_best_params(
+                data["X_train"],
+                data["y_train"],
+                hour=hour,
+                random_state=42 + hour,
+                dates=data["train_dates"],
+                base_params=selection_info["selected_params"],
+            )
+            selected_structure = selection_info["selected_structure"]
+            selected_feature_groups = selection_info["selected_feature_groups"]
+        else:
+            best_params, cv_smape = self._search_best_params(data["X_train"], data["y_train"], hour, 42 + hour)
 
         model = create_model(self.model_type, best_params)
         model.fit(data["X_train"], data["y_train"])
@@ -131,6 +157,8 @@ class DirectMonthlyBacktester:
             "smape": calculate_smape(data["y_test"], y_pred),
             "acc_rate": calculate_accuracy_rate(data["y_test"], y_pred, threshold=20.0),
             "training_time": time.time() - start,
+            "selected_structure": selected_structure,
+            "selected_feature_groups": ",".join(selected_feature_groups),
             "best_params": json.dumps(best_params, ensure_ascii=False),
         }
 
@@ -146,6 +174,8 @@ class DirectMonthlyBacktester:
         y_train = features_df.loc[split.train_mask, target_col].to_numpy()
         X_test = features_df.loc[split.test_mask, feature_cols].reset_index(drop=True)
         y_test = features_df.loc[split.test_mask, target_col].to_numpy()
+        full_X_train = features_df.loc[split.train_mask, numeric_features].reset_index(drop=True)
+        full_X_test = features_df.loc[split.test_mask, numeric_features].reset_index(drop=True)
         train_dates = features_df.loc[split.train_mask, "预测日期"].reset_index(drop=True)
         test_dates = features_df.loc[split.test_mask, "预测日期"].reset_index(drop=True)
 
@@ -159,6 +189,10 @@ class DirectMonthlyBacktester:
             "y_train": y_train,
             "X_test": X_test,
             "y_test": y_test,
+            "full_X_train": full_X_train,
+            "full_X_test": full_X_test,
+            "numeric_features": numeric_features,
+            "feature_cols": feature_cols,
             "train_dates": train_dates,
             "test_dates": test_dates,
             "split_info": split.to_dict(),

@@ -49,7 +49,8 @@ DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
 
 
 LIGHTGBM_PARAM_SPACE: Dict[str, List[Any]] = {
-    "objective": ["regression", "regression_l1", "huber"],
+    "objective": ["regression", "regression_l1", "huber", "quantile"],
+    "alpha": [0.05, 0.10, 0.25, 0.35, 0.50, 0.60, 0.75, 0.90],
     "n_estimators": [100, 200, 300, 500],
     "learning_rate": [0.01, 0.03, 0.05, 0.08, 0.1],
     "max_depth": [3, 4, 5, 6, 8, 10],
@@ -113,23 +114,33 @@ def get_param_space(model_type: str) -> Dict[str, List[Any]]:
 
 def create_model(model_type: str, params: Dict[str, Any]):
     _validate_model_type(model_type)
-    params = _strip_training_metadata(params.copy())
+    params = params.copy()
+    prediction_floor = params.pop("prediction_floor", None)
+    params = _strip_training_metadata(params)
 
     if model_type in {"lightgbm", "lightgbm_auto", "lightgbm_smape_probe"}:
         from lightgbm import LGBMRegressor
 
         if params.get("model_kind") == "feature_ensemble":
-            return FeatureGroupEnsembleRegressor(params)
+            model = FeatureGroupEnsembleRegressor(params)
+            return _with_prediction_bounds(model, prediction_floor)
 
         if params.get("model_kind") == "two_stage_low_price":
-            return LowPriceTwoStageRegressor(params)
+            model = LowPriceTwoStageRegressor(params)
+            return _with_prediction_bounds(model, prediction_floor)
+
+        if params.get("model_kind") == "low_price_gate":
+            model = LowPriceGateRegressor(params)
+            return _with_prediction_bounds(model, prediction_floor)
 
         sample_weight_mode = params.pop("sample_weight_mode", None)
         if sample_weight_mode:
-            return WeightedLGBMRegressor(params, sample_weight_mode)
+            model = WeightedLGBMRegressor(params, sample_weight_mode)
+            return _with_prediction_bounds(model, prediction_floor)
 
         params.pop("model_kind", None)
-        return LGBMRegressor(verbose=-1, **params)
+        model = LGBMRegressor(verbose=-1, **params)
+        return _with_prediction_bounds(model, prediction_floor)
 
     if model_type == "xgboost":
         from xgboost import XGBRegressor
@@ -164,7 +175,15 @@ def _strip_training_metadata(params: Dict[str, Any]) -> Dict[str, Any]:
     params.pop("feature_groups", None)
     params.pop("candidate_name", None)
     params.pop("selected_structure", None)
+    params.pop("tune_alpha", None)
+    params.pop("tune_params", None)
     return params
+
+
+def _with_prediction_bounds(model: Any, prediction_floor: Any = None):
+    if prediction_floor is None:
+        return model
+    return PredictionBoundsRegressor(model, prediction_floor=float(prediction_floor))
 
 
 def _smape_proxy_weights(y: np.ndarray, mode: str) -> np.ndarray:
@@ -198,18 +217,39 @@ class WeightedLGBMRegressor:
 
 
 def _create_lgbm_from_params(params: Dict[str, Any]):
-    params = _strip_training_metadata(params.copy())
+    params = params.copy()
+    prediction_floor = params.pop("prediction_floor", None)
+    params = _strip_training_metadata(params)
     if params.get("model_kind") == "two_stage_low_price":
-        return LowPriceTwoStageRegressor(params)
+        return _with_prediction_bounds(LowPriceTwoStageRegressor(params), prediction_floor)
+
+    if params.get("model_kind") == "low_price_gate":
+        return _with_prediction_bounds(LowPriceGateRegressor(params), prediction_floor)
 
     sample_weight_mode = params.pop("sample_weight_mode", None)
     if sample_weight_mode:
-        return WeightedLGBMRegressor(params, sample_weight_mode)
+        return _with_prediction_bounds(WeightedLGBMRegressor(params, sample_weight_mode), prediction_floor)
 
     params.pop("model_kind", None)
     from lightgbm import LGBMRegressor
 
-    return LGBMRegressor(verbose=-1, **params)
+    return _with_prediction_bounds(LGBMRegressor(verbose=-1, **params), prediction_floor)
+
+
+class PredictionBoundsRegressor:
+    """Post-process predictions with a configurable lower bound."""
+
+    def __init__(self, model: Any, prediction_floor: float):
+        self.model = model
+        self.prediction_floor = prediction_floor
+
+    def fit(self, X, y):
+        self.model.fit(X, y)
+        return self
+
+    def predict(self, X):
+        pred = np.asarray(self.model.predict(X), dtype=float)
+        return np.maximum(pred, self.prediction_floor)
 
 
 class FeatureGroupEnsembleRegressor:
@@ -320,3 +360,57 @@ class LowPriceTwoStageRegressor:
         blended = main_pred.copy()
         blended[use_low] = (1.0 - self.blend) * main_pred[use_low] + self.blend * low_pred[use_low]
         return blended
+
+
+class LowPriceGateRegressor:
+    """Cap predictions when a classifier detects a low-price regime."""
+
+    def __init__(self, params: Dict[str, Any]):
+        from lightgbm import LGBMClassifier, LGBMRegressor
+
+        config = _strip_training_metadata(params.copy())
+        config.pop("model_kind", None)
+        self.low_price_threshold = float(config.pop("low_price_threshold", 150.0))
+        self.gate_prob_threshold = float(config.pop("gate_prob_threshold", 0.05))
+        self.gate_prediction_cap = float(config.pop("gate_prediction_cap", 40.0))
+        self.sample_weight_mode = config.pop("sample_weight_mode", None)
+        self.classifier_weight_mode = config.pop("classifier_weight_mode", "default")
+        self.base_params = config
+
+        classifier_params = {
+            key: value
+            for key, value in self.base_params.items()
+            if key not in {"objective", "alpha"}
+        }
+        classifier_params.setdefault("n_estimators", 120)
+        classifier_params.setdefault("learning_rate", 0.05)
+        classifier_params.setdefault("num_leaves", 15)
+        classifier_params.setdefault("max_depth", 4)
+        classifier_params.setdefault("min_child_samples", 10)
+        classifier_params.setdefault("random_state", 42)
+
+        self.main_model = LGBMRegressor(verbose=-1, **self.base_params)
+        self.model = self.main_model
+        self.classifier = LGBMClassifier(verbose=-1, **classifier_params)
+
+    def fit(self, X, y):
+        y_arr = np.asarray(y, dtype=float)
+        sample_weight = _smape_proxy_weights(y_arr, self.sample_weight_mode) if self.sample_weight_mode else None
+        self.main_model.fit(X, y_arr, sample_weight=sample_weight)
+
+        low_mask = y_arr <= self.low_price_threshold
+        self.has_gate_ = len(np.unique(low_mask)) == 2
+        if self.has_gate_:
+            class_weight = _smape_proxy_weights(y_arr, self.classifier_weight_mode)
+            self.classifier.fit(X, low_mask.astype(int), sample_weight=class_weight)
+        return self
+
+    def predict(self, X):
+        main_pred = np.asarray(self.main_model.predict(X), dtype=float)
+        if not getattr(self, "has_gate_", False):
+            return main_pred
+        low_prob = self.classifier.predict_proba(X)[:, 1]
+        gated = low_prob >= self.gate_prob_threshold
+        pred = main_pred.copy()
+        pred[gated] = np.minimum(pred[gated], self.gate_prediction_cap)
+        return pred

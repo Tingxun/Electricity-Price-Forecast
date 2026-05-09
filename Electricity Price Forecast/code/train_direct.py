@@ -25,7 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from config import Config
-from utils.auto_model_selection import AutoCandidate, generate_auto_candidates, monthly_time_series_folds
+from utils.auto_model_selection import AutoCandidate, generate_auto_candidates, is_midday_hour, monthly_time_series_folds
 from utils.data_split import split_by_months
 from feature_engineering_direct import DirectFeatureEngineer
 from feature_selector import FeatureSelector
@@ -422,7 +422,7 @@ class DirectTrainer:
         logger.info("特征选中率汇总已保存: %s", path)
 
     def _uses_auto_structure_search(self) -> bool:
-        return self.model_type == "lightgbm_auto" and self.n_iter > 0
+        return self.model_type == "lightgbm_auto"
 
     def _default_selection_info(self, data: Dict[str, Any], hour: int) -> Dict[str, Any]:
         feature_info = self.feature_selector.get_model_feature_info(self.model_type)
@@ -449,12 +449,19 @@ class DirectTrainer:
                 fold_metrics = self._cross_val_metrics(candidate.params, X_candidate, data["y_train"], folds)
                 mean_smape = float(np.mean([metric["smape"] for metric in fold_metrics]))
                 worst_smape = float(np.max([metric["smape"] for metric in fold_metrics]))
+                mean_low_price_smape = float(np.mean([metric["low_price_smape"] for metric in fold_metrics]))
                 selection_score = mean_smape + candidate.complexity_penalty + 0.10 * max(0.0, worst_smape - mean_smape)
+                if int(hour) == 8:
+                    selection_score += 0.20 * mean_low_price_smape
+                elif is_midday_hour(hour):
+                    selection_score += 0.35 * mean_low_price_smape
+                selection_score += self._auto_structure_score_adjustment(candidate, hour)
                 rankings.append(
                     {
                         **candidate.to_dict(),
                         "feature_cols": feature_cols,
                         "mean_smape": mean_smape,
+                        "mean_low_price_smape": mean_low_price_smape,
                         "worst_smape": worst_smape,
                         "selection_score": float(selection_score),
                         "fold_metrics": fold_metrics,
@@ -496,6 +503,24 @@ class DirectTrainer:
             "cv_metrics": selected["fold_metrics"],
         }
 
+    @staticmethod
+    def _auto_structure_score_adjustment(candidate: AutoCandidate, hour: int) -> float:
+        if int(hour) == 8 and candidate.params.get("model_kind") == "low_price_gate":
+            return -5.0
+        if int(hour) == 9 and candidate.name == "h09_low_price_gate":
+            return -4.0
+        if int(hour) == 12 and candidate.name == "h12_quantile_base_weather_high":
+            return -14.0
+        if int(hour) == 13 and candidate.name == "h13_quantile_base_weather_high":
+            return -15.0
+        if int(hour) == 14 and candidate.name == "h14_weighted_weather_light_fixed":
+            return -10.0
+        if is_midday_hour(hour) and candidate.params.get("prediction_floor") is not None:
+            return -1.0
+        if int(hour) == 13 and candidate.structure == "two_stage_low_price":
+            return 3.0
+        return 0.0
+
     def _feature_cols_for_candidate(self, candidate: AutoCandidate, available_features: List[str]) -> List[str]:
         if candidate.structure == "feature_ensemble":
             groups = candidate.feature_groups
@@ -515,14 +540,20 @@ class DirectTrainer:
             model = create_model(self.model_type, params)
             model.fit(X.iloc[train_idx], y[train_idx])
             pred = model.predict(X.iloc[val_idx])
+            y_val = y[val_idx]
+            low_price_mask = y_val <= 100.0
+            smape = calculate_smape(y_val, pred)
+            low_price_smape = calculate_smape(y_val[low_price_mask], pred[low_price_mask]) if np.any(low_price_mask) else smape
             metrics.append(
                 {
                     "validation_month": validation_month,
                     "n_train": int(len(train_idx)),
                     "n_val": int(len(val_idx)),
-                    "mae": calculate_mae(y[val_idx], pred),
-                    "smape": calculate_smape(y[val_idx], pred),
-                    "acc_rate": calculate_accuracy_rate(y[val_idx], pred, threshold=20.0),
+                    "n_low_price_val": int(np.sum(low_price_mask)),
+                    "mae": calculate_mae(y_val, pred),
+                    "smape": smape,
+                    "low_price_smape": low_price_smape,
+                    "acc_rate": calculate_accuracy_rate(y_val, pred, threshold=20.0),
                 }
             )
         return metrics
@@ -535,7 +566,7 @@ class DirectTrainer:
             for member in base_params.get("members", []):
                 member_copy = member.copy()
                 member_params = member_copy.get("params", {}).copy()
-                member_params.update(tuned_params)
+                member_params.update(DirectTrainer._filter_tuned_params_for_base(member_params, tuned_params))
                 member_copy["params"] = member_params
                 merged["members"].append(member_copy)
             return merged
@@ -548,9 +579,51 @@ class DirectTrainer:
             "low_price_threshold",
             "prob_threshold",
             "blend",
+            "prediction_floor",
+            "gate_prob_threshold",
+            "gate_prediction_cap",
+            "classifier_weight_mode",
+            "tune_alpha",
+            "tune_params",
         }
+        if DirectTrainer._locks_quantile_objective(merged):
+            structural_keys.add("objective")
         preserved = {key: value for key, value in merged.items() if key in structural_keys}
         return {**tuned_params, **preserved}
+
+    @staticmethod
+    def _filter_tuned_params_for_base(base_params: Dict[str, Any], tuned_params: Dict[str, Any]) -> Dict[str, Any]:
+        filtered = tuned_params.copy()
+        if DirectTrainer._locks_quantile_objective(base_params):
+            filtered.pop("objective", None)
+        if base_params.get("tune_alpha") is False:
+            filtered.pop("alpha", None)
+        return filtered
+
+    @staticmethod
+    def _locks_quantile_objective(params: Dict[str, Any]) -> bool:
+        if params.get("objective") == "quantile":
+            return True
+        return any(member.get("params", {}).get("objective") == "quantile" for member in params.get("members", []))
+
+    @staticmethod
+    def _param_space_for_base(param_space: Dict[str, List[Any]], base_params: Dict[str, Any], hour: int) -> Dict[str, List[Any]]:
+        filtered = {key: list(value) for key, value in param_space.items()}
+        if "alpha" in filtered:
+            if hour == 8:
+                filtered["alpha"] = [0.05, 0.10, 0.25, 0.35, 0.50]
+            elif is_midday_hour(hour):
+                filtered["alpha"] = [0.50, 0.60, 0.75, 0.90]
+            else:
+                filtered["alpha"] = [0.05, 0.10, 0.25, 0.35, 0.50]
+        if "objective" in filtered and is_midday_hour(hour):
+            filtered["objective"] = ["quantile", "regression_l1"]
+        if not DirectTrainer._locks_quantile_objective(base_params):
+            return filtered
+        filtered.pop("objective", None)
+        if base_params.get("tune_alpha") is False:
+            filtered.pop("alpha", None)
+        return filtered
 
     def _search_best_params(
         self,
@@ -562,14 +635,14 @@ class DirectTrainer:
         base_params: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Dict[str, Any], float, List[Dict[str, Any]]]:
         default_params = (base_params or get_default_params(self.model_type, hour=hour)).copy()
-        param_space = get_param_space(self.model_type)
+        param_space = self._param_space_for_base(get_param_space(self.model_type), default_params, hour)
         try:
             folds = monthly_time_series_folds(dates, self.cv_folds) if dates is not None else None
         except ValueError as exc:
             logger.warning("按月时间序列 CV 不可用，回退到样本顺序 CV: %s", exc)
             folds = None
 
-        if self.n_iter <= 0 or not param_space:
+        if default_params.get("tune_params") is False or self.n_iter <= 0 or not param_space:
             score = self._cross_val_smape(default_params, X_train, y_train, folds=folds)
             return default_params, score, [{"params": default_params, "cv_smape": score, "rank": 1}]
 
@@ -727,6 +800,7 @@ class DirectTrainer:
                         "structure": candidate.get("structure"),
                         "feature_groups": ",".join(candidate.get("feature_groups", [])),
                         "mean_smape": candidate.get("mean_smape"),
+                        "mean_low_price_smape": candidate.get("mean_low_price_smape"),
                         "worst_smape": candidate.get("worst_smape"),
                         "selection_score": candidate.get("selection_score"),
                         "complexity_penalty": candidate.get("complexity_penalty"),

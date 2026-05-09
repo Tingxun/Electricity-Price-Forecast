@@ -16,6 +16,7 @@ MIDDAY_REGIME_GROUPS = [*MIDDAY_BASE_GROUPS, "direct_midday_regime"]
 MIDDAY_WEATHER_GROUPS = [*MIDDAY_REGIME_GROUPS, "direct_weather_window", "direct_midday_weather_agg"]
 
 LOW_PRICE_THRESHOLD = 50.0
+MIDDAY_LOW_PRICE_THRESHOLDS = (80.0, 100.0)
 MIN_LOW_PRICE_TOTAL = 20
 MIN_LOW_PRICE_PER_TRAIN_FOLD = 5
 
@@ -39,7 +40,7 @@ class AutoCandidate:
 
 
 def is_midday_hour(hour: int) -> bool:
-    return 8 <= int(hour) <= 15
+    return 9 <= int(hour) <= 15
 
 
 def monthly_time_series_folds(
@@ -116,7 +117,166 @@ def generate_auto_candidates(
         )
     )
 
-    if _has_enough_low_price_samples(y_train, cv_folds):
+    if int(hour) == 8:
+        candidates.append(
+            AutoCandidate(
+                name="h08_low_price_gate",
+                structure="low_price_gate",
+                feature_groups=list(weather_groups),
+                params={
+                    **default_params,
+                    "model_kind": "low_price_gate",
+                    "feature_groups": list(weather_groups),
+                    "low_price_threshold": 150.0,
+                    "gate_prob_threshold": 0.05,
+                    "gate_prediction_cap": 40.0,
+                    "classifier_weight_mode": "default",
+                },
+                complexity_penalty=0.06,
+            )
+        )
+
+    if int(hour) == 13:
+        candidates.append(
+            AutoCandidate(
+                name="h13_quantile_base_weather_high",
+                structure="single_lgbm",
+                feature_groups=list(BASE_WEATHER_GROUPS),
+                params={
+                    **default_params,
+                    "objective": "quantile",
+                    "alpha": 0.75,
+                    "feature_groups": list(BASE_WEATHER_GROUPS),
+                    "tune_alpha": False,
+                    "tune_params": False,
+                },
+                complexity_penalty=0.02,
+            )
+        )
+
+    if int(hour) == 9:
+        candidates.append(
+            AutoCandidate(
+                name="h09_low_price_gate",
+                structure="low_price_gate",
+                feature_groups=list(weather_groups),
+                params={
+                    **default_params,
+                    "model_kind": "low_price_gate",
+                    "feature_groups": list(weather_groups),
+                    "low_price_threshold": 80.0,
+                    "gate_prob_threshold": 0.05,
+                    "gate_prediction_cap": 40.0,
+                    "classifier_weight_mode": "default",
+                    "tune_params": False,
+                },
+                complexity_penalty=0.05,
+            )
+        )
+
+    if int(hour) == 12:
+        candidates.append(
+            AutoCandidate(
+                name="h12_quantile_base_weather_high",
+                structure="single_lgbm",
+                feature_groups=list(BASE_WEATHER_GROUPS),
+                params={
+                    **default_params,
+                    "objective": "quantile",
+                    "alpha": 0.75,
+                    "feature_groups": list(BASE_WEATHER_GROUPS),
+                    "tune_alpha": False,
+                    "tune_params": False,
+                },
+                complexity_penalty=0.02,
+            )
+        )
+
+    if int(hour) == 14:
+        candidates.append(
+            AutoCandidate(
+                name="h14_weighted_weather_light_fixed",
+                structure="weighted_lgbm",
+                feature_groups=list(weather_groups),
+                params={
+                    **default_params,
+                    "feature_groups": list(weather_groups),
+                    "sample_weight_mode": "light",
+                    "tune_params": False,
+                },
+                complexity_penalty=0.05,
+            )
+        )
+
+    if is_midday_hour(hour):
+        candidates.append(
+            AutoCandidate(
+                name="single_weather_floor",
+                structure="single_lgbm",
+                feature_groups=list(weather_groups),
+                params={**default_params, "feature_groups": list(weather_groups), "prediction_floor": 20.0},
+                complexity_penalty=0.04,
+            )
+        )
+
+        for name, alpha, penalty in (
+            ("quantile_low_weather", 0.35, 0.05),
+            ("quantile_mid_weather", 0.60, 0.06),
+            ("quantile_high_weather", 0.90, 0.08),
+        ):
+            candidates.append(
+                AutoCandidate(
+                    name=name,
+                    structure="single_lgbm",
+                    feature_groups=list(weather_groups),
+                    params={
+                        **_midday_quantile_params(default_params, alpha),
+                        "feature_groups": list(weather_groups),
+                    },
+                    complexity_penalty=penalty,
+                )
+            )
+
+        candidates.append(
+            AutoCandidate(
+                name="quantile_floor_weather",
+                structure="single_lgbm",
+                feature_groups=list(weather_groups),
+                params={
+                    **_midday_quantile_params(default_params, 0.60),
+                    "feature_groups": list(weather_groups),
+                    "prediction_floor": 20.0,
+                },
+                complexity_penalty=0.07,
+            )
+        )
+
+        candidates.append(
+            AutoCandidate(
+                name="weighted_weather_strong",
+                structure="weighted_lgbm",
+                feature_groups=list(weather_groups),
+                params={**default_params, "feature_groups": list(weather_groups), "sample_weight_mode": "strong"},
+                complexity_penalty=0.10,
+            )
+        )
+
+        candidates.append(
+            AutoCandidate(
+                name="weighted_weather_floor",
+                structure="weighted_lgbm",
+                feature_groups=list(weather_groups),
+                params={
+                    **default_params,
+                    "feature_groups": list(weather_groups),
+                    "sample_weight_mode": "strong",
+                    "prediction_floor": 20.0,
+                },
+                complexity_penalty=0.11,
+            )
+        )
+
+    if _has_enough_low_price_samples(y_train, cv_folds, LOW_PRICE_THRESHOLD):
         candidates.append(
             AutoCandidate(
                 name="two_stage_low_price",
@@ -135,6 +295,50 @@ def generate_auto_candidates(
             )
         )
 
+    if is_midday_hour(hour):
+        for threshold, penalty in zip(MIDDAY_LOW_PRICE_THRESHOLDS, (0.22, 0.24)):
+            if not _has_enough_low_price_samples(y_train, cv_folds, threshold):
+                continue
+            candidates.append(
+                AutoCandidate(
+                    name=f"two_stage_low_price_{int(threshold)}",
+                    structure="two_stage_low_price",
+                    feature_groups=list(weather_groups),
+                    params={
+                        **_midday_quantile_params(default_params, 0.60),
+                        "model_kind": "two_stage_low_price",
+                        "feature_groups": list(weather_groups),
+                        "low_price_threshold": threshold,
+                        "prob_threshold": 0.5,
+                        "blend": 0.7,
+                        "sample_weight_mode": "strong",
+                        "low_sample_weight_mode": "strong",
+                    },
+                    complexity_penalty=penalty,
+                )
+            )
+
+        if _has_enough_low_price_samples(y_train, cv_folds, 120.0):
+            candidates.append(
+                AutoCandidate(
+                    name="two_stage_low_price_120_aggressive",
+                    structure="two_stage_low_price",
+                    feature_groups=list(weather_groups),
+                    params={
+                        **_midday_quantile_params(default_params, 0.75),
+                        "model_kind": "two_stage_low_price",
+                        "feature_groups": list(weather_groups),
+                        "low_price_threshold": 120.0,
+                        "prob_threshold": 0.35,
+                        "blend": 1.0,
+                        "sample_weight_mode": "strong",
+                        "low_sample_weight_mode": "strong",
+                        "prediction_floor": 20.0,
+                    },
+                    complexity_penalty=0.28,
+                )
+            )
+
     ensemble_params = {
         "model_kind": "feature_ensemble",
         "members": [
@@ -152,15 +356,47 @@ def generate_auto_candidates(
         )
     )
 
+    if is_midday_hour(hour):
+        quantile_ensemble_params = {
+            "model_kind": "feature_ensemble",
+            "members": [
+                {
+                    "weight": 0.45,
+                    "feature_groups": list(weather_groups),
+                    "params": {**_midday_quantile_params(default_params, 0.35), "sample_weight_mode": "strong"},
+                },
+                {
+                    "weight": 0.35,
+                    "feature_groups": list(weather_groups),
+                    "params": _midday_quantile_params(default_params, 0.60),
+                },
+                {
+                    "weight": 0.20,
+                    "feature_groups": list(secondary_groups),
+                    "params": {**default_params},
+                },
+            ],
+        }
+        candidates.append(
+            AutoCandidate(
+                name="feature_ensemble_quantile_mix",
+                structure="feature_ensemble",
+                feature_groups=_unique_groups([*weather_groups, *secondary_groups]),
+                params=quantile_ensemble_params,
+                complexity_penalty=0.30,
+            )
+        )
+
     return candidates
 
 
 def _has_enough_low_price_samples(
     y_train: Sequence[float],
     cv_folds: Iterable[Tuple[np.ndarray, np.ndarray, str]] | None,
+    threshold: float = LOW_PRICE_THRESHOLD,
 ) -> bool:
     y_arr = np.asarray(y_train, dtype=float)
-    low_mask = y_arr <= LOW_PRICE_THRESHOLD
+    low_mask = y_arr <= threshold
     if int(low_mask.sum()) < MIN_LOW_PRICE_TOTAL:
         return False
 
@@ -171,6 +407,22 @@ def _has_enough_low_price_samples(
         if int(low_mask[train_idx].sum()) < MIN_LOW_PRICE_PER_TRAIN_FOLD:
             return False
     return True
+
+
+def _midday_quantile_params(default_params: Dict[str, Any], alpha: float) -> Dict[str, Any]:
+    params = {
+        **default_params,
+        "objective": "quantile",
+        "alpha": alpha,
+        "n_estimators": 120,
+        "learning_rate": 0.03,
+        "max_depth": 4,
+        "num_leaves": 15,
+        "min_child_samples": 10,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+    }
+    return params
 
 
 def _unique_groups(groups: Sequence[str]) -> List[str]:
