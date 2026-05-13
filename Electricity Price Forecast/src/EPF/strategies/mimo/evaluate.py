@@ -15,10 +15,11 @@ import torch
 from ...config import Config
 from ...feature_engineering.mimo import MimoFeatureEngineer
 from ...models.tcn_mimo import TcnMimoConfig, TcnMimoNet, resolve_device
-from .train import MimoTrainer, SUPPORTED_MIMO_MODELS
+from ...schema import PRED_DATE_COL
 from ...utils.evaluation import prediction_rows_from_wide, save_prediction_report, summarize_predictions
 from ...utils.metrics import calculate_accuracy_rate, calculate_mae, calculate_rmse, calculate_smape
 from ...utils.model_store import safe_period_label
+from .train import MimoTrainer, SUPPORTED_MIMO_MODELS
 
 
 logger = logging.getLogger(__name__)
@@ -78,11 +79,15 @@ class MimoEvaluator:
 
     @staticmethod
     def _wide_predictions(prediction_df: pd.DataFrame) -> pd.DataFrame:
-        dates = sorted(prediction_df["预测日期"].unique())
-        wide = pd.DataFrame({"预测日期": dates})
+        dates = sorted(prediction_df[PRED_DATE_COL].unique())
+        wide = pd.DataFrame({PRED_DATE_COL: dates})
         for hour in sorted(prediction_df["hour"].unique()):
-            hour_df = prediction_df[prediction_df["hour"] == hour][["预测日期", "actual", "pred"]]
-            wide = wide.merge(hour_df.rename(columns={"actual": f"actual_H{hour:02d}", "pred": f"pred_H{hour:02d}"}), on="预测日期", how="left")
+            hour_df = prediction_df[prediction_df["hour"] == hour][[PRED_DATE_COL, "actual", "pred"]]
+            wide = wide.merge(
+                hour_df.rename(columns={"actual": f"actual_H{hour:02d}", "pred": f"pred_H{hour:02d}"}),
+                on=PRED_DATE_COL,
+                how="left",
+            )
         return wide
 
     def _resolve_model_dir(self) -> Path:

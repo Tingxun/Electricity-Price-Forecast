@@ -16,10 +16,11 @@ from torch.utils.data import DataLoader, TensorDataset
 from ...config import Config
 from ...feature_engineering.mimo import MimoFeatureEngineer
 from ...models.tcn_mimo import TcnMimoNet, resolve_device
-from .train import MimoTrainer, SUPPORTED_MIMO_MODELS
+from ...schema import PRED_DATE_COL, ROLLING_MODE_MONTHLY, ROLLING_MODE_WEEKLY
 from ...utils.data_split import list_rolling_months
 from ...utils.evaluation import prediction_rows_from_wide, save_prediction_report, summarize_predictions
 from ...utils.metrics import calculate_accuracy_rate, calculate_mae, calculate_rmse, calculate_smape
+from .train import MimoTrainer, SUPPORTED_MIMO_MODELS
 
 
 logger = logging.getLogger(__name__)
@@ -51,13 +52,13 @@ class MimoBacktester:
         self.retrain_frequency = retrain_frequency
         self.trainer = MimoTrainer(config, model_type, model_config=model_config)
         self.output_prefix = "weekly_backtest" if retrain_frequency == "weekly" else "monthly_backtest"
-        self.rolling_mode = "expanding_forward_weekly" if retrain_frequency == "weekly" else "expanding_forward"
+        self.rolling_mode = ROLLING_MODE_WEEKLY if retrain_frequency == "weekly" else ROLLING_MODE_MONTHLY
         self.prediction_rows: List[pd.DataFrame] = []
 
     def run(self, hours: Optional[List[int]] = None) -> pd.DataFrame:
         samples = MimoFeatureEngineer(lookback_days=self.trainer.model_config.lookback_days).load_features()
-        ref_df = pd.DataFrame({"预测日期": pd.to_datetime(samples["dates"])})
-        months = list_rolling_months(ref_df, "预测日期", self.min_train_months, self.start_month, self.end_month)
+        ref_df = pd.DataFrame({PRED_DATE_COL: pd.to_datetime(samples["dates"])})
+        months = list_rolling_months(ref_df, PRED_DATE_COL, self.min_train_months, self.start_month, self.end_month)
         rows = []
         for month in months:
             if self.retrain_frequency == "weekly":

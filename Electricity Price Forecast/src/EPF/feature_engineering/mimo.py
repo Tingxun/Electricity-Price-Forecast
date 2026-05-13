@@ -12,15 +12,10 @@ import numpy as np
 import pandas as pd
 
 from ..config import Config
+from ..schema import ACTUAL_MARKER, HOUR_COL, PRICE_COL, RAW_DATE_COL, RAW_PERIOD_COL
 
 
 logger = logging.getLogger(__name__)
-
-DATE_COL = "\u65e5\u671f"
-HOUR_COL = "\u5c0f\u65f6"
-PERIOD_COL = "\u65f6\u6bb5"
-TARGET_DATE_COL = "\u9884\u6d4b\u65e5\u671f"
-PRICE_COL = "\u5e73\u5747\u51fa\u6e05\u4ef7\u683c-\u5b9e\u65f6\uff08\u5143/MWh\uff09"
 
 
 class MimoFeatureEngineer:
@@ -33,7 +28,7 @@ class MimoFeatureEngineer:
     def create_features(self, df: pd.DataFrame) -> Dict[str, Any]:
         df = self._normalize_input(df)
         exog_cols = self._select_exog_columns(df)
-        daily_data = {date: group.sort_values(HOUR_COL).reset_index(drop=True) for date, group in df.groupby(DATE_COL)}
+        daily_data = {date: group.sort_values(HOUR_COL).reset_index(drop=True) for date, group in df.groupby(RAW_DATE_COL)}
         all_dates = sorted(daily_data)
 
         dates: List[str] = []
@@ -105,7 +100,7 @@ class MimoFeatureEngineer:
             "price_history_shape": list(samples["price_history"].shape[1:]),
             "target_exog_shape": list(samples["target_exog"].shape[1:]),
             "target_shape": list(samples["targets"].shape[1:]),
-            "date_col": DATE_COL,
+            "date_col": RAW_DATE_COL,
             "hour_col": HOUR_COL,
             "price_col": PRICE_COL,
             "exog_columns": list(samples["exog_columns"]),
@@ -136,12 +131,12 @@ class MimoFeatureEngineer:
 
     def _normalize_input(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        missing = [col for col in [DATE_COL, HOUR_COL, PRICE_COL] if col not in df.columns]
+        missing = [col for col in [RAW_DATE_COL, HOUR_COL, PRICE_COL] if col not in df.columns]
         if missing:
             raise ValueError(f"processed data missing required columns: {missing}")
-        df[DATE_COL] = pd.to_datetime(df[DATE_COL])
+        df[RAW_DATE_COL] = pd.to_datetime(df[RAW_DATE_COL])
         df[HOUR_COL] = pd.to_numeric(df[HOUR_COL], errors="coerce").astype("Int64")
-        df = df.sort_values([DATE_COL, HOUR_COL]).reset_index(drop=True)
+        df = df.sort_values([RAW_DATE_COL, HOUR_COL]).reset_index(drop=True)
         numeric_cols = df.select_dtypes(include=[np.number]).columns
         for col in numeric_cols:
             if df[col].isna().any():
@@ -149,12 +144,12 @@ class MimoFeatureEngineer:
         return df
 
     def _select_exog_columns(self, df: pd.DataFrame) -> List[str]:
-        excluded = {DATE_COL, PERIOD_COL, PRICE_COL}
+        excluded = {RAW_DATE_COL, RAW_PERIOD_COL, PRICE_COL}
         result = []
         for col in df.columns:
             if col in excluded:
                 continue
-            if "\u5b9e\u9645" in col:
+            if ACTUAL_MARKER in col:
                 continue
             if pd.api.types.is_numeric_dtype(df[col]):
                 result.append(col)

@@ -7,13 +7,14 @@ from EPF.utils.data_split import split_by_months
 from EPF.strategies.direct.backtest import DirectMonthlyBacktester
 from EPF.config import Config
 from EPF.models.factory import create_model, get_default_params, get_param_space, list_model_types
+from EPF.schema import PRED_DATE_COL, ROLLING_MODE_MONTHLY, ROLLING_MODE_WEEKLY
 from EPF.strategies.direct.train import DirectTrainer
 from EPF.utils.model_store import safe_period_label
 
 
 class ForwardBacktestTests(unittest.TestCase):
     def setUp(self):
-        self.date_col = "预测日期"
+        self.date_col = PRED_DATE_COL
         self.df = pd.DataFrame(
             {
                 self.date_col: pd.date_range("2024-06-12", "2025-06-30", freq="D"),
@@ -70,9 +71,9 @@ class ForwardBacktestTests(unittest.TestCase):
         monthly = DirectMonthlyBacktester(Config(), "lightgbm_auto", 0, 3, 3, retrain_frequency="monthly")
         weekly = DirectMonthlyBacktester(Config(), "lightgbm_auto", 0, 3, 3, retrain_frequency="weekly")
 
-        self.assertEqual(monthly.rolling_mode, "expanding_forward")
+        self.assertEqual(monthly.rolling_mode, ROLLING_MODE_MONTHLY)
         self.assertEqual(monthly.output_prefix, "monthly_backtest")
-        self.assertEqual(weekly.rolling_mode, "expanding_forward_weekly")
+        self.assertEqual(weekly.rolling_mode, ROLLING_MODE_WEEKLY)
         self.assertEqual(weekly.output_prefix, "weekly_backtest")
         with self.assertRaises(ValueError):
             DirectMonthlyBacktester(Config(), "lightgbm_auto", 0, 3, 3, retrain_frequency="daily")

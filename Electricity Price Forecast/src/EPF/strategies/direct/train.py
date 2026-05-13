@@ -20,6 +20,7 @@ from sklearn.model_selection import ParameterSampler
 from sklearn.preprocessing import StandardScaler
 
 from ...config import Config
+from ...schema import PRED_DATE_COL
 from ...utils.auto_model_selection import AutoCandidate, generate_auto_candidates, is_midday_hour, monthly_time_series_folds
 from ...utils.data_split import split_by_months
 from ...feature_engineering.direct import DirectFeatureEngineer
@@ -60,14 +61,12 @@ class DirectTrainer:
         engineer = DirectFeatureEngineer()
         features_df, target_col = engineer.load_features(hour)
 
-        candidate_features = [
-            col for col in features_df.columns if col not in [target_col, "预测日期"]
-        ]
+        candidate_features = [col for col in features_df.columns if col not in [target_col, PRED_DATE_COL]]
         numeric_features = features_df[candidate_features].select_dtypes(include=[np.number]).columns.tolist()
         feature_cols = self.feature_selector.select_features_for_model(self.model_type, numeric_features, hour=hour)
         feature_info = self.feature_selector.get_model_feature_info(self.model_type)
 
-        split = split_by_months(features_df, "预测日期", self.test_months)
+        split = split_by_months(features_df, PRED_DATE_COL, self.test_months)
         self._ensure_run_dirs(split.test_period)
 
         X_train = features_df.loc[split.train_mask, feature_cols].reset_index(drop=True)
@@ -76,8 +75,8 @@ class DirectTrainer:
         y_test = features_df.loc[split.test_mask, target_col].to_numpy()
         full_X_train = features_df.loc[split.train_mask, numeric_features].reset_index(drop=True)
         full_X_test = features_df.loc[split.test_mask, numeric_features].reset_index(drop=True)
-        train_dates = features_df.loc[split.train_mask, "预测日期"].reset_index(drop=True)
-        test_dates_series = features_df.loc[split.test_mask, "预测日期"].reset_index(drop=True)
+        train_dates = features_df.loc[split.train_mask, PRED_DATE_COL].reset_index(drop=True)
+        test_dates_series = features_df.loc[split.test_mask, PRED_DATE_COL].reset_index(drop=True)
 
         scaler = None
         if feature_info.get("normalize", False):

@@ -7,10 +7,11 @@ import pandas as pd
 import torch
 
 
-from EPF.feature_engineering.mimo import HOUR_COL, PRICE_COL, MimoFeatureEngineer
+from EPF.feature_engineering.mimo import MimoFeatureEngineer
 from EPF.models.tcn_mimo import TcnMimoConfig, TcnMimoNet
+from EPF.schema import ACTUAL_MARKER, HOUR_COL, PRICE_COL, RAW_DATE_COL, RAW_PERIOD_COL
 from EPF.strategies.mimo.train import MimoTrainer
-from EPF.utils.strategy_registry import implemented_strategy_names
+from EPF.utils.strategy_registry import implemented_strategy_names, load_strategy_component, strategy_model_types
 
 
 class MimoWorkflowTests(unittest.TestCase):
@@ -22,12 +23,12 @@ class MimoWorkflowTests(unittest.TestCase):
             for hour in range(24):
                 rows.append(
                     {
-                        "日期": date,
-                        "时段": f"{hour + 1:02d}:00",
+                        RAW_DATE_COL: date,
+                        RAW_PERIOD_COL: f"{hour + 1:02d}:00",
                         HOUR_COL: hour,
                         "系统负荷-实时": 1000 + day * 10 + hour,
                         "气象-温度-预测": 20 + hour,
-                        "气象-温度-实际": 99 + hour,
+                        f"气象-温度-{ACTUAL_MARKER}": 99 + hour,
                         PRICE_COL: day * 100 + hour,
                     }
                 )
@@ -40,7 +41,7 @@ class MimoWorkflowTests(unittest.TestCase):
         self.assertEqual(samples["target_exog"].shape[1], 24)
         self.assertEqual(samples["targets"].shape[1], 24)
         self.assertNotIn(PRICE_COL, samples["exog_columns"])
-        self.assertFalse(any("实际" in col for col in samples["exog_columns"]))
+        self.assertFalse(any(ACTUAL_MARKER in col for col in samples["exog_columns"]))
 
         first_date = pd.Timestamp(str(samples["dates"][0]))
         history_dates = [pd.Timestamp(str(x)) for x in samples["history_dates"][0]]
@@ -58,6 +59,8 @@ class MimoWorkflowTests(unittest.TestCase):
 
     def test_mimo_strategy_is_implemented(self):
         self.assertIn("mimo", implemented_strategy_names())
+        self.assertIn("tcn_mimo", strategy_model_types("mimo"))
+        self.assertIs(load_strategy_component("mimo", "trainer"), MimoTrainer)
 
     def test_mimo_metadata_contains_required_training_fields(self):
         with tempfile.TemporaryDirectory() as tmpdir:

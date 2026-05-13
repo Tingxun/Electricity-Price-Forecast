@@ -17,6 +17,7 @@ from typing import Optional, Dict, List, Tuple
 import logging
 
 from ..config import config
+from ..schema import HOUR_COL, PRED_DATE_COL, PRICE_COL, RAW_DATE_COL
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ class DirectFeatureEngineer:
     """
     
     def __init__(self):
-        self.price_col = '平均出清价格-实时（元/MWh）'
+        self.price_col = PRICE_COL
         self.price_lags = [2, 3, 7, 14]
         self.price_windows = [3, 7, 14]
         self.context_hour_lags = [1, 2, 3, 6, 12]
@@ -60,11 +61,11 @@ class DirectFeatureEngineer:
         
         # 数据准备
         df = df.copy()
-        df['日期'] = pd.to_datetime(df['日期'])
-        df = df.sort_values(['日期', '小时']).reset_index(drop=True)
+        df[RAW_DATE_COL] = pd.to_datetime(df[RAW_DATE_COL])
+        df = df.sort_values([RAW_DATE_COL, HOUR_COL]).reset_index(drop=True)
         
-        all_dates = df['日期'].unique()
-        daily_data = {date: group.copy() for date, group in df.groupby('日期', sort=False)}
+        all_dates = df[RAW_DATE_COL].unique()
+        daily_data = {date: group.copy() for date, group in df.groupby(RAW_DATE_COL, sort=False)}
         print(f"数据时间范围: {all_dates.min()} 至 {all_dates.max()}")
         print(f"总天数: {len(all_dates)}")
         
@@ -155,7 +156,7 @@ class DirectFeatureEngineer:
         features = {}
         
         # 1. 时间特征
-        features['预测日期'] = target_date
+        features[PRED_DATE_COL] = target_date
         for weekday in range(1, 8):
             features[f'星期_{weekday}'] = 1 if target_date.dayofweek + 1 == weekday else 0
         
@@ -182,7 +183,7 @@ class DirectFeatureEngineer:
         self._add_midday_weather_agg_features(features, target_date_data, target_hour)
         
         # 4. 目标值（T+1日target_hour时刻的实时价格）
-        target_hour_data = target_date_data[target_date_data['小时'] == target_hour]
+        target_hour_data = target_date_data[target_date_data[HOUR_COL] == target_hour]
         if len(target_hour_data) == 1:
             target_price = target_hour_data.iloc[0][self.price_col]
             if pd.notna(target_price):
@@ -222,7 +223,7 @@ class DirectFeatureEngineer:
                 features[f'滞后2天_H{target_hour:02d}_{name}_价格'] = price
 
         # T-2日全日形态统计
-        day_prices = t_minus_2_data.sort_values('小时')[self.price_col].dropna()
+        day_prices = t_minus_2_data.sort_values(HOUR_COL)[self.price_col].dropna()
         current_price = lag_values.get(2)
         if len(day_prices) == 24 and current_price is not None:
             day_mean = float(day_prices.mean())
@@ -261,7 +262,7 @@ class DirectFeatureEngineer:
             features[f'历史价格_H{target_hour:02d}_T2减T7'] = lag_values[2] - lag_values[7]
 
     def _get_hour_price(self, date_data: pd.DataFrame, hour: int) -> Optional[float]:
-        hour_data = date_data[date_data['小时'] == hour]
+        hour_data = date_data[date_data[HOUR_COL] == hour]
         if len(hour_data) != 1:
             return None
         price = hour_data.iloc[0][self.price_col]
@@ -370,7 +371,7 @@ class DirectFeatureEngineer:
         prefix : str
             特征前缀（'当前', '滞后Nh'）
         """
-        hour_data = date_data[date_data['小时'] == hour]
+        hour_data = date_data[date_data[HOUR_COL] == hour]
         if len(hour_data) != 1:
             return
         
@@ -440,7 +441,7 @@ class DirectFeatureEngineer:
         """添加目标日市场边界日内形态统计，不使用价格列。"""
         hourly_values = []
         for hour in range(24):
-            hour_data = date_data[date_data['小时'] == hour]
+            hour_data = date_data[date_data[HOUR_COL] == hour]
             if len(hour_data) == 1:
                 hourly_values.append(self._compute_market_values(hour_data.iloc[0]))
 
@@ -468,7 +469,7 @@ class DirectFeatureEngineer:
 
         hourly_values = []
         for hour in range(8, 16):
-            hour_data = date_data[date_data['小时'] == hour]
+            hour_data = date_data[date_data[HOUR_COL] == hour]
             if len(hour_data) != 1:
                 return
             hourly_values.append((hour, self._compute_market_values(hour_data.iloc[0])))
@@ -506,14 +507,14 @@ class DirectFeatureEngineer:
             return
 
         for prefix, hour in self._context_hour_pairs(target_hour):
-            hour_data = date_data[date_data['小时'] == hour]
+            hour_data = date_data[date_data[HOUR_COL] == hour]
             if len(hour_data) != 1:
                 continue
             row = hour_data.iloc[0]
             self._add_weather_aggregates(features, row, prefix, weather_cols)
 
         if 8 <= target_hour <= 15:
-            midday_data = date_data[date_data['小时'].between(8, 15)]
+            midday_data = date_data[date_data[HOUR_COL].between(8, 15)]
             if len(midday_data) == 8:
                 for keyword in weather_keywords:
                     cols = [col for col in weather_cols if keyword in col]
@@ -607,8 +608,8 @@ class DirectFeatureEngineer:
         data_file = feature_path / f'features_H{hour:02d}.csv'
         features_df = pd.read_csv(data_file)
         
-        if '预测日期' in features_df.columns:
-            features_df['预测日期'] = pd.to_datetime(features_df['预测日期'])
+        if PRED_DATE_COL in features_df.columns:
+            features_df[PRED_DATE_COL] = pd.to_datetime(features_df[PRED_DATE_COL])
         
         target_col = f'Price_H{hour:02d}'
         
@@ -641,7 +642,7 @@ def main():
         for hour in [0, 8, 12, 23]:
             if hour in hourly_results:
                 df_h, target_col = hourly_results[hour]
-                feature_cols = [c for c in df_h.columns if c not in [target_col, '预测日期']]
+                feature_cols = [c for c in df_h.columns if c not in [target_col, PRED_DATE_COL]]
                 print(f"\n{hour:02d}:00时刻 - 特征数: {len(feature_cols)}")
                 print(f"  特征示例: {feature_cols[:8]}")
 

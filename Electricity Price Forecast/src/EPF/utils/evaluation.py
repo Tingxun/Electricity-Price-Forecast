@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, Optional
 import numpy as np
 import pandas as pd
 
+from ..schema import MIDDAY_HOURS, NON_MIDDAY_HOURS, PRED_DATE_COL
 from .metrics import calculate_sape
 
 
@@ -61,7 +62,7 @@ def prediction_rows_from_wide(
                     "week_id": week_id,
                     "week_start": week_start,
                     "week_end": week_end,
-                    "预测日期": date.strftime("%Y-%m-%d"),
+                    PRED_DATE_COL: date.strftime("%Y-%m-%d"),
                     "hour": hour,
                     "actual": actual_value,
                     "pred": pred_value,
@@ -125,8 +126,8 @@ def summarize_predictions(prediction_df: pd.DataFrame) -> Dict[str, Any]:
         .sort_values(["test_month", "actual_price_bucket"])
     )
 
-    midday = hour_summary[hour_summary["hour"].between(8, 15)]
-    non_midday = hour_summary[~hour_summary["hour"].between(8, 15)]
+    midday = hour_summary[hour_summary["hour"].isin(MIDDAY_HOURS)]
+    non_midday = hour_summary[hour_summary["hour"].isin(NON_MIDDAY_HOURS)]
     midday_smape = float(midday["smape"].mean()) if not midday.empty else overall["overall_smape"]
     non_midday_smape = float(non_midday["smape"].mean()) if not non_midday.empty else overall["overall_smape"]
     month_std = float(month_summary["smape"].std(ddof=0)) if len(month_summary) > 1 else 0.0
@@ -138,9 +139,9 @@ def summarize_predictions(prediction_df: pd.DataFrame) -> Dict[str, Any]:
         + 0.20 * max(0.0, midday_smape - non_midday_smape)
     )
 
-    month_summary["midday_smape"] = month_summary["test_month"].map(_band_smape(hour_summary, range(8, 16)))
+    month_summary["midday_smape"] = month_summary["test_month"].map(_band_smape(hour_summary, MIDDAY_HOURS))
     month_summary["non_midday_smape"] = month_summary["test_month"].map(
-        _band_smape(hour_summary, [*range(0, 8), *range(16, 24)])
+        _band_smape(hour_summary, NON_MIDDAY_HOURS)
     )
     month_summary["worst_hours"] = month_summary["test_month"].map(_worst_hours(hour_summary))
     month_summary["smape_below_40"] = month_summary["smape"] < 40.0

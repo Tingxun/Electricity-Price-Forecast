@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from ...config import Config
+from ...schema import PRED_DATE_COL
 from ...utils.data_split import split_by_months
 from ...feature_engineering.direct import DirectFeatureEngineer
 from ...feature_engineering.selector import FeatureSelector
@@ -89,7 +90,7 @@ class DirectEvaluator:
         metadata_months = metadata.get("split_info", {}).get("test_months")
         test_months = self.test_months or metadata_months or self.config.split_config.get("test_months")
 
-        split = split_by_months(features_df, "预测日期", test_months)
+        split = split_by_months(features_df, PRED_DATE_COL, test_months)
         test_df = features_df.loc[split.test_mask].reset_index(drop=True)
         X_test = test_df[feature_cols]
 
@@ -101,7 +102,7 @@ class DirectEvaluator:
         return {
             "X_test": X_test,
             "y_test": test_df[target_col].to_numpy(),
-            "test_dates": test_df["预测日期"],
+            "test_dates": test_df[PRED_DATE_COL],
             "split_info": split.to_dict(),
         }
 
@@ -117,7 +118,7 @@ class DirectEvaluator:
         if metadata.get("feature_cols"):
             return metadata["feature_cols"]
 
-        candidate_features = [col for col in features_df.columns if col not in [target_col, "预测日期"]]
+        candidate_features = [col for col in features_df.columns if col not in [target_col, PRED_DATE_COL]]
         numeric_features = features_df[candidate_features].select_dtypes(include=[np.number]).columns.tolist()
         return self.feature_selector.select_features_for_model(self.model_type, numeric_features, hour=hour)
 
@@ -156,7 +157,7 @@ class DirectEvaluator:
         results_df.to_csv(log_dir / "evaluation_report.csv", index=False, encoding="utf-8-sig")
         results_df.to_json(log_dir / "evaluation_report.json", orient="records", force_ascii=False, indent=2)
 
-        pred_df = pd.DataFrame({"预测日期": dates})
+        pred_df = pd.DataFrame({PRED_DATE_COL: dates})
         for hour in sorted(predictions):
             pred_df[f"actual_H{hour:02d}"] = actuals[hour]
             pred_df[f"pred_H{hour:02d}"] = predictions[hour]

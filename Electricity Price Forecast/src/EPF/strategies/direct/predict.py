@@ -16,8 +16,9 @@ import pandas as pd
 from ...config import Config
 from ...feature_engineering.direct import DirectFeatureEngineer
 from ...feature_engineering.selector import FeatureSelector
-from ...utils.model_store import resolve_model_dir
+from ...schema import PRED_DATE_COL
 from ...models.factory import list_model_types
+from ...utils.model_store import resolve_model_dir
 
 
 logger = logging.getLogger(__name__)
@@ -72,13 +73,13 @@ class DirectPredictor:
 
         engineer = DirectFeatureEngineer()
         features_df, target_col = engineer.load_features(hour)
-        features_df["预测日期"] = pd.to_datetime(features_df["预测日期"])
+        features_df[PRED_DATE_COL] = pd.to_datetime(features_df[PRED_DATE_COL])
 
         target_ts = pd.to_datetime(target_date)
-        row = features_df[features_df["预测日期"] == target_ts]
+        row = features_df[features_df[PRED_DATE_COL] == target_ts]
         if row.empty:
             row = features_df.tail(1)
-            logger.warning("H%02d 未找到目标日期 %s，使用最新特征日期 %s", hour, target_date, row.iloc[0]["预测日期"])
+            logger.warning("H%02d 未找到目标日期 %s，使用最新特征日期 %s", hour, target_date, row.iloc[0][PRED_DATE_COL])
 
         feature_cols = self._load_feature_cols(hour, features_df, target_col)
         X = row[feature_cols]
@@ -90,7 +91,7 @@ class DirectPredictor:
 
         model = joblib.load(model_path)
         pred = self._apply_calibration(model.predict(X), self._load_calibration(hour))
-        return float(np.asarray(pred).reshape(-1)[0]), row.iloc[0]["预测日期"]
+        return float(np.asarray(pred).reshape(-1)[0]), row.iloc[0][PRED_DATE_COL]
 
     def _load_feature_cols(self, hour: int, features_df: pd.DataFrame, target_col: str) -> List[str]:
         metadata_path = self.model_dir / f"metadata_H{hour:02d}.json"
@@ -98,7 +99,7 @@ class DirectPredictor:
             with open(metadata_path, "r", encoding="utf-8") as f:
                 return json.load(f)["feature_cols"]
 
-        candidate_features = [col for col in features_df.columns if col not in [target_col, "预测日期"]]
+        candidate_features = [col for col in features_df.columns if col not in [target_col, PRED_DATE_COL]]
         numeric_features = features_df[candidate_features].select_dtypes(include=[np.number]).columns.tolist()
         return self.feature_selector.select_features_for_model(self.model_type, numeric_features, hour=hour)
 

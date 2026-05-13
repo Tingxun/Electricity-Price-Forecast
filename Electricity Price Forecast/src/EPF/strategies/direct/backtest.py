@@ -15,22 +15,20 @@ from sklearn.model_selection import ParameterSampler
 from sklearn.preprocessing import StandardScaler
 
 from ...config import Config
-from ...utils.data_split import list_rolling_months, split_by_months
 from ...feature_engineering.direct import DirectFeatureEngineer
 from ...feature_engineering.selector import FeatureSelector
 from ...models.factory import create_model, get_default_params, get_param_space, list_model_types
-from .train import DirectTrainer
-from ...utils.metrics import calculate_accuracy_rate, calculate_mae, calculate_rmse, calculate_sape, calculate_smape
+from ...schema import PRED_DATE_COL, ROLLING_MODE_MONTHLY, ROLLING_MODE_WEEKLY
+from ...utils.data_split import list_rolling_months, split_by_months
 from ...utils.evaluation import summarize_predictions
+from ...utils.metrics import calculate_accuracy_rate, calculate_mae, calculate_rmse, calculate_sape, calculate_smape
+from .train import DirectTrainer
 
 
 logger = logging.getLogger(__name__)
 
 FORWARD_DEFAULT_START_MONTH = "2025-03"
 FORWARD_DEFAULT_END_MONTH = "2025-06"
-ROLLING_MODE = "expanding_forward"
-WEEKLY_ROLLING_MODE = "expanding_forward_weekly"
-DATE_COL = "\u9884\u6d4b\u65e5\u671f"
 
 
 class DirectMonthlyBacktester:
@@ -59,7 +57,7 @@ class DirectMonthlyBacktester:
         self.retrain_frequency = retrain_frequency
         self.feature_selector = FeatureSelector()
         self.engineer = DirectFeatureEngineer()
-        self.rolling_mode = WEEKLY_ROLLING_MODE if retrain_frequency == "weekly" else ROLLING_MODE
+        self.rolling_mode = ROLLING_MODE_WEEKLY if retrain_frequency == "weekly" else ROLLING_MODE_MONTHLY
         self.output_prefix = "weekly_backtest" if retrain_frequency == "weekly" else "monthly_backtest"
         self.prediction_rows: List[Dict[str, Any]] = []
 
@@ -70,7 +68,7 @@ class DirectMonthlyBacktester:
         reference_df, _ = self.engineer.load_features(hours[0])
         months = list_rolling_months(
             reference_df,
-            DATE_COL,
+            PRED_DATE_COL,
             min_train_months=self.min_train_months,
             start_month=self.start_month,
             end_month=self.end_month,
@@ -82,7 +80,7 @@ class DirectMonthlyBacktester:
         for test_month in months:
             logger.info("开始回测月份 %s", test_month)
             if self.retrain_frequency == "weekly":
-                windows = self._weekly_windows_for_month(reference_df, DATE_COL, test_month)
+                windows = self._weekly_windows_for_month(reference_df, PRED_DATE_COL, test_month)
                 for week_id, week_start, week_end in windows:
                     logger.info("开始周度回测 %s %s %s-%s", test_month, week_id, week_start, week_end)
                     for hour in hours:
@@ -164,7 +162,7 @@ class DirectMonthlyBacktester:
                     "week_start": week_start,
                     "week_end": week_end,
                     "hour": hour,
-                    DATE_COL: pd.Timestamp(date).strftime("%Y-%m-%d"),
+                    PRED_DATE_COL: pd.Timestamp(date).strftime("%Y-%m-%d"),
                     "actual": float(actual),
                     "pred": float(pred),
                     "error": float(pred - actual),
@@ -207,7 +205,7 @@ class DirectMonthlyBacktester:
         week_end: Optional[str] = None,
     ) -> Dict[str, Any]:
         features_df, target_col = self.engineer.load_features(hour)
-        candidate_features = [col for col in features_df.columns if col not in [target_col, DATE_COL]]
+        candidate_features = [col for col in features_df.columns if col not in [target_col, PRED_DATE_COL]]
         numeric_features = features_df[candidate_features].select_dtypes(include=[np.number]).columns.tolist()
         feature_cols = self.feature_selector.select_features_for_model(self.model_type, numeric_features, hour=hour)
         feature_info = self.feature_selector.get_model_feature_info(self.model_type)
@@ -221,7 +219,7 @@ class DirectMonthlyBacktester:
                 week_end=week_end,
             )
         else:
-            split = split_by_months(features_df, DATE_COL, [test_month])
+            split = split_by_months(features_df, PRED_DATE_COL, [test_month])
             train_mask = split.train_mask
             test_mask = split.test_mask
             split_info = split.to_dict()
@@ -232,8 +230,8 @@ class DirectMonthlyBacktester:
         y_test = features_df.loc[test_mask, target_col].to_numpy()
         full_X_train = features_df.loc[train_mask, numeric_features].reset_index(drop=True)
         full_X_test = features_df.loc[test_mask, numeric_features].reset_index(drop=True)
-        train_dates = features_df.loc[train_mask, DATE_COL].reset_index(drop=True)
-        test_dates = features_df.loc[test_mask, DATE_COL].reset_index(drop=True)
+        train_dates = features_df.loc[train_mask, PRED_DATE_COL].reset_index(drop=True)
+        test_dates = features_df.loc[test_mask, PRED_DATE_COL].reset_index(drop=True)
 
         if feature_info.get("normalize", False):
             scaler = StandardScaler()
@@ -291,7 +289,7 @@ class DirectMonthlyBacktester:
         week_start: str,
         week_end: str,
     ) -> Tuple[pd.Series, pd.Series, Dict[str, Any]]:
-        dates = pd.to_datetime(df[DATE_COL])
+        dates = pd.to_datetime(df[PRED_DATE_COL])
         start = pd.Timestamp(week_start)
         end = pd.Timestamp(week_end)
         month = pd.Period(test_month, freq="M")
