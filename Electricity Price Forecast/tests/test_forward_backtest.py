@@ -4,10 +4,10 @@ import pandas as pd
 
 from EPF.utils.auto_model_selection import AutoCandidate, generate_auto_candidates, monthly_time_series_folds
 from EPF.utils.data_split import split_by_months
-from EPF.backtest_direct import DirectMonthlyBacktester
+from EPF.strategies.direct.backtest import DirectMonthlyBacktester
 from EPF.config import Config
-from EPF.model_factory import create_model, get_default_params, get_param_space, list_model_types
-from EPF.train_direct import DirectTrainer
+from EPF.models.factory import create_model, get_default_params, get_param_space, list_model_types
+from EPF.strategies.direct.train import DirectTrainer
 from EPF.utils.model_store import safe_period_label
 
 

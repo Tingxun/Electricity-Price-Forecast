@@ -7,9 +7,9 @@ import pandas as pd
 import torch
 
 
-from EPF.feature_engineering_mimo import HOUR_COL, PRICE_COL, MimoFeatureEngineer
-from EPF.model_tcn_mimo import TcnMimoConfig, TcnMimoNet
-from EPF.train_mimo import MimoTrainer
+from EPF.feature_engineering.mimo import HOUR_COL, PRICE_COL, MimoFeatureEngineer
+from EPF.models.tcn_mimo import TcnMimoConfig, TcnMimoNet
+from EPF.strategies.mimo.train import MimoTrainer
 from EPF.utils.strategy_registry import implemented_strategy_names
 
 

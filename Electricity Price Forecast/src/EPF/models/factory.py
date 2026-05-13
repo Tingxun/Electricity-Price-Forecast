@@ -263,7 +263,7 @@ class FeatureGroupEnsembleRegressor:
         self.fitted_members_ = []
 
     def fit(self, X, y):
-        from .feature_selector import FeatureSelector
+        from ..feature_engineering.selector import FeatureSelector
 
         selector = FeatureSelector()
         available_features = list(X.columns)

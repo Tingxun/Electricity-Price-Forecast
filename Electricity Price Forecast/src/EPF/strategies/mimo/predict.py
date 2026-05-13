@@ -12,10 +12,10 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from .config import Config
-from .evaluate_mimo import MimoEvaluator
-from .feature_engineering_mimo import MimoFeatureEngineer
-from .train_mimo import MimoTrainer, SUPPORTED_MIMO_MODELS
+from ...config import Config
+from .evaluate import MimoEvaluator
+from ...feature_engineering.mimo import MimoFeatureEngineer
+from .train import MimoTrainer, SUPPORTED_MIMO_MODELS
 
 
 logger = logging.getLogger(__name__)

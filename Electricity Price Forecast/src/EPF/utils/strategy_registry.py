@@ -12,19 +12,19 @@ IMPLEMENTED_STRATEGIES: Dict[str, Dict[str, str]] = {
         "name": "Direct",
         "status": "implemented",
         "description": "Train one independent single-output model for each forecast hour.",
-        "feature_module": "feature_engineering_direct.py",
-        "train_module": "train_direct.py",
-        "evaluate_module": "evaluate_direct.py",
-        "predict_module": "predict_direct.py",
+        "feature_module": "EPF.feature_engineering.direct",
+        "train_module": "EPF.strategies.direct.train",
+        "evaluate_module": "EPF.strategies.direct.evaluate",
+        "predict_module": "EPF.strategies.direct.predict",
     },
     "mimo": {
         "name": "MIMO",
         "status": "implemented",
         "description": "Train a true multi-output model that predicts the full 24-hour curve jointly.",
-        "feature_module": "feature_engineering_mimo.py",
-        "train_module": "train_mimo.py",
-        "evaluate_module": "evaluate_mimo.py",
-        "predict_module": "predict_mimo.py",
+        "feature_module": "EPF.feature_engineering.mimo",
+        "train_module": "EPF.strategies.mimo.train",
+        "evaluate_module": "EPF.strategies.mimo.evaluate",
+        "predict_module": "EPF.strategies.mimo.predict",
     }
 }
 

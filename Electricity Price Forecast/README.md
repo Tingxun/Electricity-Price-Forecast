@@ -1,4 +1,4 @@
-﻿# Electricity Price Forecast
+# Electricity Price Forecast
 
 基于多源异构数据的日前电价预测项目。当前主流程支持 Direct 24 小时独立建模和 MIMO 多输出建模，统一入口已迁移到 `EPF` 包。
 
@@ -9,16 +9,15 @@
 ├─ src/EPF/                 # 可导入的 Python 包
 │  ├─ cli.py                # 统一命令行入口
 │  ├─ config/               # 路径与实验配置
-│  ├─ utils/                # 指标、切分、评估、模型存储等工具
-│  ├─ feature_engineering_* # Direct/MIMO 特征工程
-│  ├─ train_*              # 训练流程
-│  ├─ evaluate_*           # 评估流程
-│  ├─ predict_*            # 预测流程
-│  └─ backtest_*           # 回测流程
+│  ├─ feature_engineering/  # 特征工程与特征选择代码
+│  ├─ models/               # 模型工厂与模型定义
+│  ├─ strategies/           # Direct/MIMO 训练、评估、预测、回测
+│  ├─ reports/              # 模型对比与报告生成
+│  └─ utils/                # 指标、切分、评估、模型存储等工具
 ├─ tests/                   # 自动化测试
 ├─ notebooks/               # EDA 和数据预处理 Notebook
 ├─ docs/                    # 项目报告与技术文档
-├─ data/                    # raw/processed 数据
+├─ data/                    # 数据目录；data/features 是生成后的特征数据产物
 ├─ results/                 # 本地运行结果，默认不入库
 └─ saved_models/            # 本地模型产物，默认不入库
 ```

@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
-from .config import Config
+from ..config import Config
 
 
 def _load_overall(path: Path, strategy: str, model_type: str, retrain_frequency: str) -> Dict[str, Any] | None:

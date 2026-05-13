@@ -139,7 +139,7 @@ calendar_weather:
 
 ## 4. 特征工程
 
-本轮核心不是简单扩充全部特征，而是围绕午间低价机制增加结构化特征，并通过 `feature_selector.py` 控制不同小时只接收必要特征。H08-H15 使用完整午间 regime 特征；非午间只在验证有效的小时使用星期 one-hot 或天气窗口。
+本轮核心不是简单扩充全部特征，而是围绕午间低价机制增加结构化特征，并通过 `EPF.feature_engineering.selector` 控制不同小时只接收必要特征。H08-H15 使用完整午间 regime 特征；非午间只在验证有效的小时使用星期 one-hot 或天气窗口。
 
 ### 4.1 星期形态特征
 
@@ -279,7 +279,7 @@ strong:  upper = 8
 
 实现位置：
 
-- `model_factory.py`
+- `EPF.models.factory`
 - `_smape_proxy_weights`
 - `WeightedLGBMRegressor`
 
@@ -378,7 +378,7 @@ H01/H03/H06/H18/H19/H21 则固化为单成员特征组模型。这样做的好�
 
 实现位置：
 
-- `model_factory.py`
+- `EPF.models.factory`
 - `FeatureGroupEnsembleRegressor`
 - 每个 member 内部保存 `weight`、`feature_groups`、`params`
 
