@@ -16,11 +16,13 @@ class Config:
             "processed_data": self.project_root / "data" / "processed" / "processed_data.csv",
             "features": self.project_root / "data" / "features",
             "direct_features": self.project_root / "data" / "features" / "direct",
+            "mimo_features": self.project_root / "data" / "features" / "mimo",
             "direct_feature_info": self.project_root / "data" / "features" / "direct" / "feature_info.json",
         }
 
         self.model_paths = {
             "direct": self.project_root / "saved_models" / "direct",
+            "mimo": self.project_root / "saved_models" / "mimo",
         }
 
         self.result_paths = {

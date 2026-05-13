@@ -1,9 +1,7 @@
 """
 Forecasting strategy registry.
 
-Direct is the only implemented strategy today. Recursive and MIMO are reserved
-as explicit future strategy slots so the command line, documentation, and output
-layout can evolve without another structural rewrite.
+Direct and MIMO are implemented. Recursive is reserved as a future strategy slot.
 """
 
 from typing import Dict, List
@@ -18,6 +16,15 @@ IMPLEMENTED_STRATEGIES: Dict[str, Dict[str, str]] = {
         "train_module": "train_direct.py",
         "evaluate_module": "evaluate_direct.py",
         "predict_module": "predict_direct.py",
+    },
+    "mimo": {
+        "name": "MIMO",
+        "status": "implemented",
+        "description": "Train a true multi-output model that predicts the full 24-hour curve jointly.",
+        "feature_module": "feature_engineering_mimo.py",
+        "train_module": "train_mimo.py",
+        "evaluate_module": "evaluate_mimo.py",
+        "predict_module": "predict_mimo.py",
     }
 }
 
@@ -27,11 +34,6 @@ PLANNED_STRATEGIES: Dict[str, Dict[str, str]] = {
         "name": "Recursive / Iterative",
         "status": "planned",
         "description": "Train one-step models and feed previous predictions into later horizons.",
-    },
-    "mimo": {
-        "name": "MIMO",
-        "status": "planned",
-        "description": "Train a true multi-output model that predicts the full 24-hour curve jointly.",
     },
 }
 

@@ -26,6 +26,7 @@ from feature_selector import FeatureSelector
 from model_factory import create_model, get_default_params, get_param_space, list_model_types
 from train_direct import DirectTrainer
 from utils.metrics import calculate_accuracy_rate, calculate_mae, calculate_rmse, calculate_sape, calculate_smape
+from utils.evaluation import summarize_predictions
 
 
 logger = logging.getLogger(__name__)
@@ -392,6 +393,11 @@ class DirectMonthlyBacktester:
         prediction_df = pd.DataFrame(self.prediction_rows)
         if not prediction_df.empty:
             prediction_df.to_csv(log_dir / f"{self.output_prefix}_predictions.csv", index=False, encoding="utf-8-sig")
+            shared_summary = summarize_predictions(prediction_df)
+            shared_summary["hour_summary"].to_csv(log_dir / f"{self.output_prefix}_hour_summary.csv", index=False, encoding="utf-8-sig")
+            shared_summary["bucket_summary"].to_csv(log_dir / f"{self.output_prefix}_bucket_summary.csv", index=False, encoding="utf-8-sig")
+        else:
+            shared_summary = {"overall": {}}
 
         success_df = results_df[results_df["status"] == "success"].copy()
         summary_source_df = success_df
@@ -469,6 +475,7 @@ class DirectMonthlyBacktester:
                 ["test_month", "smape", "monthly_acc_rate", "worst_hours"],
             ].to_dict("records") if not month_summary.empty else [],
         }
+        summary.update({k: v for k, v in shared_summary.get("overall", {}).items() if v is not None})
         with open(log_dir / f"{self.output_prefix}_overall.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
 
