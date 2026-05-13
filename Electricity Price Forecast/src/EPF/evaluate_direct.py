@@ -5,7 +5,6 @@ Evaluate trained Direct multi-step models on the held-out month split.
 import argparse
 import json
 import logging
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -13,17 +12,13 @@ import joblib
 import numpy as np
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
-
-from config import Config
-from utils.data_split import split_by_months
-from feature_engineering_direct import DirectFeatureEngineer
-from feature_selector import FeatureSelector
-from utils.model_store import resolve_model_dir, safe_period_label
-from model_factory import list_model_types
-from utils.metrics import calculate_mae, calculate_rmse, calculate_smape, calculate_accuracy_rate, calculate_sape
+from .config import Config
+from .utils.data_split import split_by_months
+from .feature_engineering_direct import DirectFeatureEngineer
+from .feature_selector import FeatureSelector
+from .utils.model_store import resolve_model_dir, safe_period_label
+from .model_factory import list_model_types
+from .utils.metrics import calculate_mae, calculate_rmse, calculate_smape, calculate_accuracy_rate, calculate_sape
 
 
 logger = logging.getLogger(__name__)

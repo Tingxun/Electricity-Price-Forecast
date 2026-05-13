@@ -4,17 +4,12 @@ Command line entry point for the Direct electricity price forecasting workflow.
 
 import argparse
 import logging
-import sys
 from pathlib import Path
 from typing import List, Optional
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
-
-from config import Config
-from model_factory import list_model_types
-from utils.strategy_registry import all_strategy_names, ensure_implemented, list_strategies
+from .config import Config
+from .model_factory import list_model_types
+from .utils.strategy_registry import all_strategy_names, ensure_implemented, list_strategies
 
 
 logger = logging.getLogger(__name__)
@@ -54,14 +49,14 @@ def features_mode(config: Config, strategy: str = "direct") -> None:
     logger.info("加载预处理数据: %s, shape=%s", processed_file, df.shape)
 
     if strategy == "mimo":
-        from feature_engineering_mimo import MimoFeatureEngineer
+        from .feature_engineering_mimo import MimoFeatureEngineer
 
         engineer = MimoFeatureEngineer()
         samples = engineer.create_features(df)
         engineer.save_features(samples, config.get_data_path("mimo_features"))
         return
 
-    from feature_engineering_direct import DirectFeatureEngineer
+    from .feature_engineering_direct import DirectFeatureEngineer
 
     engineer = DirectFeatureEngineer()
     hourly_results = engineer.create_all_features(df)
@@ -73,7 +68,7 @@ def train_mode(config: Config, args: argparse.Namespace) -> None:
 
     n_iter = 0 if getattr(args, "fixed_params", False) else args.n_iter
     if args.strategy == "mimo":
-        from train_mimo import MimoTrainer
+        from .train_mimo import MimoTrainer
 
         overrides = {
             "epochs": getattr(args, "epochs", None),
@@ -89,7 +84,7 @@ def train_mode(config: Config, args: argparse.Namespace) -> None:
         ).train()
         return
 
-    from train_direct import DirectTrainer
+    from .train_direct import DirectTrainer
 
     trainer = DirectTrainer(
         config=config,
@@ -105,7 +100,7 @@ def evaluate_mode(config: Config, args: argparse.Namespace) -> None:
     ensure_implemented(args.strategy)
 
     if args.strategy == "mimo":
-        from evaluate_mimo import MimoEvaluator
+        from .evaluate_mimo import MimoEvaluator
 
         results, overall = MimoEvaluator(config, args.model, test_months=args.test_months).evaluate(args.hours)
         print(results.to_string(index=False))
@@ -117,7 +112,7 @@ def evaluate_mode(config: Config, args: argparse.Namespace) -> None:
         )
         return
 
-    from evaluate_direct import DirectEvaluator
+    from .evaluate_direct import DirectEvaluator
 
     results, overall_acc_rate = DirectEvaluator(config, args.model, test_months=args.test_months).evaluate(args.hours)
     print(results.to_string(index=False))
@@ -133,7 +128,7 @@ def predict_mode(config: Config, args: argparse.Namespace) -> None:
     ensure_implemented(args.strategy)
 
     if args.strategy == "mimo":
-        from predict_mimo import MimoPredictor
+        from .predict_mimo import MimoPredictor
 
         result = MimoPredictor(config, args.model, test_months=args.test_months).predict(args.date)
         prices = result["predictions"]["prices"]
@@ -142,7 +137,7 @@ def predict_mode(config: Config, args: argparse.Namespace) -> None:
         print(f"Min/Max/Mean: {min(prices):.2f} / {max(prices):.2f} / {sum(prices) / len(prices):.2f}")
         return
 
-    from predict_direct import DirectPredictor
+    from .predict_direct import DirectPredictor
 
     result = DirectPredictor(config, args.model, test_months=args.test_months).predict(args.date)
     prices = result["predictions"]["prices"]
@@ -156,7 +151,7 @@ def backtest_mode(config: Config, args: argparse.Namespace) -> None:
     ensure_implemented(args.strategy)
 
     if args.strategy == "mimo":
-        from backtest_mimo import MimoBacktester
+        from .backtest_mimo import MimoBacktester
 
         overrides = {
             "epochs": getattr(args, "epochs", None),
@@ -178,7 +173,7 @@ def backtest_mode(config: Config, args: argparse.Namespace) -> None:
         print(f"\nAverage sMAPE={avg_smape:.2f}%")
         return
 
-    from backtest_direct import DirectMonthlyBacktester
+    from .backtest_direct import DirectMonthlyBacktester
 
     results = DirectMonthlyBacktester(
         config=config,

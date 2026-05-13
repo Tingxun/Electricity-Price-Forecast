@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -14,17 +13,13 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
-
-from config import Config
-from feature_engineering_mimo import MimoFeatureEngineer
-from model_tcn_mimo import TcnMimoNet, resolve_device
-from train_mimo import MimoTrainer, SUPPORTED_MIMO_MODELS
-from utils.data_split import list_rolling_months
-from utils.evaluation import prediction_rows_from_wide, save_prediction_report, summarize_predictions
-from utils.metrics import calculate_accuracy_rate, calculate_mae, calculate_rmse, calculate_smape
+from .config import Config
+from .feature_engineering_mimo import MimoFeatureEngineer
+from .model_tcn_mimo import TcnMimoNet, resolve_device
+from .train_mimo import MimoTrainer, SUPPORTED_MIMO_MODELS
+from .utils.data_split import list_rolling_months
+from .utils.evaluation import prediction_rows_from_wide, save_prediction_report, summarize_predictions
+from .utils.metrics import calculate_accuracy_rate, calculate_mae, calculate_rmse, calculate_smape
 
 
 logger = logging.getLogger(__name__)

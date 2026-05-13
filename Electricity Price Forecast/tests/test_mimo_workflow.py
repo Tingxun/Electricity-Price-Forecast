@@ -1,4 +1,3 @@
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,14 +7,10 @@ import pandas as pd
 import torch
 
 
-CODE_DIR = Path(__file__).resolve().parents[1]
-if str(CODE_DIR) not in sys.path:
-    sys.path.insert(0, str(CODE_DIR))
-
-from feature_engineering_mimo import HOUR_COL, PRICE_COL, MimoFeatureEngineer
-from model_tcn_mimo import TcnMimoConfig, TcnMimoNet
-from train_mimo import MimoTrainer
-from utils.strategy_registry import implemented_strategy_names
+from EPF.feature_engineering_mimo import HOUR_COL, PRICE_COL, MimoFeatureEngineer
+from EPF.model_tcn_mimo import TcnMimoConfig, TcnMimoNet
+from EPF.train_mimo import MimoTrainer
+from EPF.utils.strategy_registry import implemented_strategy_names
 
 
 class MimoWorkflowTests(unittest.TestCase):

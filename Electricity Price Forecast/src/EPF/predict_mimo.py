@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -13,14 +12,10 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
-
-from config import Config
-from evaluate_mimo import MimoEvaluator
-from feature_engineering_mimo import MimoFeatureEngineer
-from train_mimo import MimoTrainer, SUPPORTED_MIMO_MODELS
+from .config import Config
+from .evaluate_mimo import MimoEvaluator
+from .feature_engineering_mimo import MimoFeatureEngineer
+from .train_mimo import MimoTrainer, SUPPORTED_MIMO_MODELS
 
 
 logger = logging.getLogger(__name__)

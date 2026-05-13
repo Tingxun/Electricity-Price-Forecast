@@ -5,7 +5,6 @@ Predict a 24-hour price curve with trained Direct models.
 import argparse
 import json
 import logging
-import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -14,15 +13,11 @@ import joblib
 import numpy as np
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
-
-from config import Config
-from feature_engineering_direct import DirectFeatureEngineer
-from feature_selector import FeatureSelector
-from utils.model_store import resolve_model_dir
-from model_factory import list_model_types
+from .config import Config
+from .feature_engineering_direct import DirectFeatureEngineer
+from .feature_selector import FeatureSelector
+from .utils.model_store import resolve_model_dir
+from .model_factory import list_model_types
 
 
 logger = logging.getLogger(__name__)

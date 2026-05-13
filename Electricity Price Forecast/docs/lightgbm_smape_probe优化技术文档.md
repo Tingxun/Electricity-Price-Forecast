@@ -109,8 +109,8 @@ H12:
 午间 v3 达到 24.58% 后，H00-H07 和 H16-H23 已经相对稳定，因此追加优化采用小搜索空间，避免为了单月收益引入过拟合：
 
 ```bash
-python code/main.py optimize-probe --model lightgbm_smape_probe_v3 --hours 0 1 2 3 4 5 6 7 --test-months 2025-03 --max-candidates 15
-python code/main.py optimize-probe --model lightgbm_smape_probe_v3 --hours 16 17 18 19 20 21 22 23 --test-months 2025-03 --max-candidates 15
+epf optimize-probe --model lightgbm_smape_probe_v3 --hours 0 1 2 3 4 5 6 7 --test-months 2025-03 --max-candidates 15
+epf optimize-probe --model lightgbm_smape_probe_v3 --hours 16 17 18 19 20 21 22 23 --test-months 2025-03 --max-candidates 15
 ```
 
 候选特征视角：
@@ -399,15 +399,15 @@ H01/H03/H06/H18/H19/H21 则固化为单成员特征组模型。这样做的好�
 运行命令：
 
 ```bash
-python code/main.py optimize-probe --model lightgbm_smape_probe_v3 --hours 8 9 10 11 12 13 14 15 --test-months 2025-03 --max-candidates 180
-python code/main.py optimize-probe --model lightgbm_smape_probe_v3 --hours 0 1 2 3 4 5 6 7 --test-months 2025-03 --max-candidates 15
-python code/main.py optimize-probe --model lightgbm_smape_probe_v3 --hours 16 17 18 19 20 21 22 23 --test-months 2025-03 --max-candidates 15
+epf optimize-probe --model lightgbm_smape_probe_v3 --hours 8 9 10 11 12 13 14 15 --test-months 2025-03 --max-candidates 180
+epf optimize-probe --model lightgbm_smape_probe_v3 --hours 0 1 2 3 4 5 6 7 --test-months 2025-03 --max-candidates 15
+epf optimize-probe --model lightgbm_smape_probe_v3 --hours 16 17 18 19 20 21 22 23 --test-months 2025-03 --max-candidates 15
 ```
 
 进一步聚焦 H10/H12/H13/H14：
 
 ```bash
-python code/main.py optimize-probe --model lightgbm_smape_probe_v3 --hours 10 12 13 14 --test-months 2025-03 --max-candidates 320 --local-alpha-radius 0.20 --local-alpha-step 0.02 --broad-alpha-step 0.03
+epf optimize-probe --model lightgbm_smape_probe_v3 --hours 10 12 13 14 --test-months 2025-03 --max-candidates 320 --local-alpha-radius 0.20 --local-alpha-step 0.02 --broad-alpha-step 0.03
 ```
 
 探针输出：
@@ -460,17 +460,17 @@ H21: 19.81% -> 18.42%  (-1.40)
 完整复现：
 
 ```bash
-python code/main.py features --strategy direct
-python code/main.py train --strategy direct --model lightgbm_smape_probe --test-months 2025-03 --n-iter 0
-python code/main.py evaluate --strategy direct --model lightgbm_smape_probe --test-months 2025-03
-python code/main.py backtest --strategy direct --model lightgbm_smape_probe --n-iter 0 --min-train-months 3
+epf features --strategy direct
+epf train --strategy direct --model lightgbm_smape_probe --test-months 2025-03 --n-iter 0
+epf evaluate --strategy direct --model lightgbm_smape_probe --test-months 2025-03
+epf backtest --strategy direct --model lightgbm_smape_probe --n-iter 0 --min-train-months 3
 ```
 
 当前正式模型也可用实验别名复现：
 
 ```bash
-python code/main.py train --strategy direct --model lightgbm_smape_probe_v3 --test-months 2025-03 --n-iter 0
-python code/main.py evaluate --strategy direct --model lightgbm_smape_probe_v3 --test-months 2025-03
+epf train --strategy direct --model lightgbm_smape_probe_v3 --test-months 2025-03 --n-iter 0
+epf evaluate --strategy direct --model lightgbm_smape_probe_v3 --test-months 2025-03
 ```
 
 ## 11. 后续优化方向

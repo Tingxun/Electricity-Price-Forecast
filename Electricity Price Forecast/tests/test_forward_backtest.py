@@ -1,21 +1,14 @@
-import sys
 import unittest
-from pathlib import Path
-
 import pandas as pd
 
 
-CODE_DIR = Path(__file__).resolve().parents[1]
-if str(CODE_DIR) not in sys.path:
-    sys.path.insert(0, str(CODE_DIR))
-
-from utils.auto_model_selection import AutoCandidate, generate_auto_candidates, monthly_time_series_folds
-from utils.data_split import split_by_months
-from backtest_direct import DirectMonthlyBacktester
-from config import Config
-from model_factory import create_model, get_default_params, get_param_space, list_model_types
-from train_direct import DirectTrainer
-from utils.model_store import safe_period_label
+from EPF.utils.auto_model_selection import AutoCandidate, generate_auto_candidates, monthly_time_series_folds
+from EPF.utils.data_split import split_by_months
+from EPF.backtest_direct import DirectMonthlyBacktester
+from EPF.config import Config
+from EPF.model_factory import create_model, get_default_params, get_param_space, list_model_types
+from EPF.train_direct import DirectTrainer
+from EPF.utils.model_store import safe_period_label
 
 
 class ForwardBacktestTests(unittest.TestCase):

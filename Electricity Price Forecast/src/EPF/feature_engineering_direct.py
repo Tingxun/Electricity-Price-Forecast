@@ -14,11 +14,9 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
-import sys
 import logging
 
-sys.path.append(str(Path(__file__).parent))
-from config import config
+from .config import config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)

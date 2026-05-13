@@ -1,85 +1,111 @@
-# Electricity Price Forecast
+﻿# Electricity Price Forecast
 
-本项目采用 Direct 24 小时独立建模框架预测日前电价：每个目标小时训练一个独立模型。
+基于多源异构数据的日前电价预测项目。当前主流程支持 Direct 24 小时独立建模和 MIMO 多输出建模，统一入口已迁移到 `EPF` 包。
 
-当前推荐正式训练入口是 `lightgbm_auto`。训练时会把目标测试月之前的全部数据作为训练窗口，在训练窗口内用按月滚动的时间序列交叉验证选择结构/特征组，再对胜出结构做超参数搜索，最后用完整训练窗口重训并保存模型。测试月只用于最终评估，不参与结构选择或参数搜索。
+## 项目结构
 
-## 可用模型
-
-```bash
-python code/main.py list
+```text
+.
+├─ src/EPF/                 # 可导入的 Python 包
+│  ├─ cli.py                # 统一命令行入口
+│  ├─ config/               # 路径与实验配置
+│  ├─ utils/                # 指标、切分、评估、模型存储等工具
+│  ├─ feature_engineering_* # Direct/MIMO 特征工程
+│  ├─ train_*              # 训练流程
+│  ├─ evaluate_*           # 评估流程
+│  ├─ predict_*            # 预测流程
+│  └─ backtest_*           # 回测流程
+├─ tests/                   # 自动化测试
+├─ notebooks/               # EDA 和数据预处理 Notebook
+├─ docs/                    # 项目报告与技术文档
+├─ data/                    # raw/processed 数据
+├─ results/                 # 本地运行结果，默认不入库
+└─ saved_models/            # 本地模型产物，默认不入库
 ```
 
-主要模型：
+## 安装
 
-- `lightgbm_auto`：自动结构/特征组选择 + 可选超参数搜索的推荐模型。
-- `lightgbm`：LightGBM 固定结构基线。
-- `xgboost`、`random_forest`、`ridge`、`lasso`：对照基线。
+建议在项目根目录安装为可编辑包：
+
+```bash
+pip install -e .
+```
+
+安装后可以直接使用命令：
+
+```bash
+epf list
+```
+
+如果不安装，也可以临时指定源码路径：
+
+```powershell
+$env:PYTHONPATH="src"; python -m EPF.cli list
+```
 
 ## 基本流程
 
 生成特征：
 
 ```bash
-python code/main.py features --strategy direct
+epf features --strategy direct
 ```
 
 固定参数训练：
 
 ```bash
-python code/main.py train --strategy direct --model lightgbm_auto --test-months 2025-03 --fixed-params
+epf train --strategy direct --model lightgbm_auto --test-months 2025-03 --fixed-params
 ```
 
-自动结构选择并调参：
+自动结构选择与调参：
 
 ```bash
-python code/main.py train --strategy direct --model lightgbm_auto --test-months 2025-03 --n-iter 20 --cv-folds 3
+epf train --strategy direct --model lightgbm_auto --test-months 2025-03 --n-iter 20 --cv-folds 3
 ```
 
 只训练部分小时：
 
 ```bash
-python code/main.py train --strategy direct --model lightgbm_auto --test-months 2025-03 --hours 0 1 2
+epf train --strategy direct --model lightgbm_auto --test-months 2025-03 --hours 0 1 2
 ```
 
 评估指定测试月模型：
 
 ```bash
-python code/main.py evaluate --strategy direct --model lightgbm_auto --test-months 2025-03
+epf evaluate --strategy direct --model lightgbm_auto --test-months 2025-03
 ```
 
-预测时可指定使用哪个测试月训练出的模型；不指定时默认读取最新保存版本：
+预测指定日期：
 
 ```bash
-python code/main.py predict --strategy direct --model lightgbm_auto --date 2025-04-01 --test-months 2025-03
+epf predict --strategy direct --model lightgbm_auto --date 2025-04-01 --test-months 2025-03
 ```
 
 完整执行特征、训练、评估：
 
 ```bash
-python code/main.py run-all --strategy direct --model lightgbm_auto --test-months 2025-03 --n-iter 20
+epf run-all --strategy direct --model lightgbm_auto --test-months 2025-03 --n-iter 20
 ```
 
 ## 模型保存
 
-训练产物按模型和测试期版本化保存：
+训练产物按策略、模型和测试期版本化保存：
 
 ```text
 saved_models/direct/<model_type>/<test_period>/
+saved_models/mimo/<model_type>/<test_period>/
 ```
 
-每个小时保存：
+Direct 每个小时通常包含：
 
 - `model_Hxx.pkl`
 - `metadata_Hxx.json`
 - `feature_importance/feature_importance_Hxx.csv`
 
-运行级别保存：
+运行级别通常包含：
 
 - `manifest.json`
 - `best_params_by_hour.json`
 - `training_report.csv`
 - `structure_search_results.csv`
 - `hyperparameter_search_results.csv`
-
-`metadata_Hxx.json` 会记录测试期、训练窗口、训练模式、入选结构、入选特征组、候选结构排名、CV 指标、最佳参数和最终测试月指标。

@@ -4,17 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
-
-from config import Config
+from .config import Config
 
 
 def _load_overall(path: Path, strategy: str, model_type: str, retrain_frequency: str) -> Dict[str, Any] | None:

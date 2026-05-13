@@ -10,7 +10,7 @@ class Config:
     """Centralized paths and experiment settings."""
 
     def __init__(self):
-        self.project_root = Path(__file__).resolve().parents[2]
+        self.project_root = Path(__file__).resolve().parents[3]
 
         self.data_paths = {
             "processed_data": self.project_root / "data" / "processed" / "processed_data.csv",

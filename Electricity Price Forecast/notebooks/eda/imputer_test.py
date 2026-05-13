@@ -6,7 +6,6 @@
 n"""
 
 import os
-import sys
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -22,13 +21,11 @@ plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei']
 plt.rcParams['axes.unicode_minus'] = False
 warnings.filterwarnings('ignore')
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 
 def load_data():
     """加载并合并市场边界数据和气象数据"""
-    market_data_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'processed', 'processed_市场总表.csv')
-    weather_data_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'processed', 'processed_气象总表.csv')
+    market_data_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'processed', 'processed_市场总表.csv')
+    weather_data_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'processed', 'processed_气象总表.csv')
     
     # 加载市场边界数据
     market_df = pd.read_csv(market_data_path)

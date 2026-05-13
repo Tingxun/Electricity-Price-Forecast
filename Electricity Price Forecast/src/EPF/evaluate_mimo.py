@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -13,17 +12,13 @@ import numpy as np
 import pandas as pd
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
-
-from config import Config
-from feature_engineering_mimo import MimoFeatureEngineer
-from model_tcn_mimo import TcnMimoConfig, TcnMimoNet, resolve_device
-from train_mimo import MimoTrainer, SUPPORTED_MIMO_MODELS
-from utils.evaluation import prediction_rows_from_wide, save_prediction_report, summarize_predictions
-from utils.metrics import calculate_accuracy_rate, calculate_mae, calculate_rmse, calculate_smape
-from utils.model_store import safe_period_label
+from .config import Config
+from .feature_engineering_mimo import MimoFeatureEngineer
+from .model_tcn_mimo import TcnMimoConfig, TcnMimoNet, resolve_device
+from .train_mimo import MimoTrainer, SUPPORTED_MIMO_MODELS
+from .utils.evaluation import prediction_rows_from_wide, save_prediction_report, summarize_predictions
+from .utils.metrics import calculate_accuracy_rate, calculate_mae, calculate_rmse, calculate_smape
+from .utils.model_store import safe_period_label
 
 
 logger = logging.getLogger(__name__)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Sequence
 
-from config import Config
+from ..config import Config
 
 
 def safe_period_label(test_period: Optional[str]) -> str:
